@@ -12,6 +12,10 @@ web-build/
 .env
 .env.local
 
+# Native folders (managed by EAS)
+android/
+ios/
+
 # macOS
 .DS_Store
 
