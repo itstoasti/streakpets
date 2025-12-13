@@ -1841,29 +1841,51 @@ function WhiteboardGame({ onClose, onComplete }) {
       return;
     }
 
-    const newDrawing = {
-      id: Date.now().toString(),
-      paths: paths,
-      backgroundColor: backgroundColor,
-      createdAt: new Date().toISOString(),
-    };
+    // Get canvas dimensions
+    return new Promise((resolve) => {
+      if (canvasRef.current) {
+        canvasRef.current.measure((x, y, width, height) => {
+          const newDrawing = {
+            id: Date.now().toString(),
+            paths: paths,
+            backgroundColor: backgroundColor,
+            createdAt: new Date().toISOString(),
+            canvasWidth: width,
+            canvasHeight: height,
+          };
 
-    const updatedDrawings = [newDrawing, ...savedDrawings];
-    setSavedDrawings(updatedDrawings);
-
-    try {
-      await AsyncStorage.setItem('whiteboard_drawings', JSON.stringify(updatedDrawings));
-      await AsyncStorage.setItem('savedDrawings', JSON.stringify(updatedDrawings)); // For widget
-      updateGalleryWidget(); // Update widget (don't await to avoid blocking)
-      showAlert('Success!', 'Drawing saved to gallery!');
-      // Clear canvas and switch to gallery tab
-      setPaths([]);
-      setCurrentPath([]);
-      currentPathRef.current = [];
-      setCurrentTab('gallery');
-    } catch (error) {
-      showAlert('Error', 'Failed to save drawing');
-    }
+          const updatedDrawings = [newDrawing, ...savedDrawings];
+          setSavedDrawings(updatedDrawings);
+          resolve(updatedDrawings);
+        });
+      } else {
+        const newDrawing = {
+          id: Date.now().toString(),
+          paths: paths,
+          backgroundColor: backgroundColor,
+          createdAt: new Date().toISOString(),
+          canvasWidth: 400, // fallback
+          canvasHeight: 400,
+        };
+        const updatedDrawings = [newDrawing, ...savedDrawings];
+        setSavedDrawings(updatedDrawings);
+        resolve(updatedDrawings);
+      }
+    }).then(async (updatedDrawings) => {
+      try {
+        await AsyncStorage.setItem('whiteboard_drawings', JSON.stringify(updatedDrawings));
+        await AsyncStorage.setItem('savedDrawings', JSON.stringify(updatedDrawings)); // For widget
+        updateGalleryWidget(); // Update widget (don't await to avoid blocking)
+        showAlert('Success!', 'Drawing saved to gallery!');
+        // Clear canvas and switch to gallery tab
+        setPaths([]);
+        setCurrentPath([]);
+        currentPathRef.current = [];
+        setCurrentTab('gallery');
+      } catch (error) {
+        showAlert('Error', 'Failed to save drawing');
+      }
+    });
   }
 
   async function deleteDrawing(drawingId) {
@@ -1892,7 +1914,7 @@ function WhiteboardGame({ onClose, onComplete }) {
     );
   }
 
-  function renderPath(pathData, index) {
+  function renderPath(pathData, index, scaleX = 1, scaleY = 1) {
     const { path, color, size = 4 } = pathData;
     if (path.length === 0) return null;
 
@@ -1902,14 +1924,18 @@ function WhiteboardGame({ onClose, onComplete }) {
     for (let i = 0; i < path.length; i++) {
       const point = path[i];
 
+      // Scale coordinates
+      const scaledX = point.x * scaleX;
+      const scaledY = point.y * scaleY;
+
       // Draw circle at current point
       circles.push(
         <View
           key={`${index}-${i}`}
           style={{
             position: 'absolute',
-            left: point.x - size / 2,
-            top: point.y - size / 2,
+            left: scaledX - size / 2,
+            top: scaledY - size / 2,
             width: size,
             height: size,
             borderRadius: size / 2,
@@ -1921,8 +1947,10 @@ function WhiteboardGame({ onClose, onComplete }) {
       // Interpolate between current and next point
       if (i < path.length - 1) {
         const nextPoint = path[i + 1];
+        const scaledNextX = nextPoint.x * scaleX;
+        const scaledNextY = nextPoint.y * scaleY;
         const distance = Math.sqrt(
-          Math.pow(nextPoint.x - point.x, 2) + Math.pow(nextPoint.y - point.y, 2)
+          Math.pow(scaledNextX - scaledX, 2) + Math.pow(scaledNextY - scaledY, 2)
         );
 
         // Scale max interpolation distance based on brush size
@@ -1937,8 +1965,8 @@ function WhiteboardGame({ onClose, onComplete }) {
 
           for (let step = 1; step < steps; step++) {
             const t = step / steps;
-            const interpolatedX = point.x + (nextPoint.x - point.x) * t;
-            const interpolatedY = point.y + (nextPoint.y - point.y) * t;
+            const interpolatedX = scaledX + (scaledNextX - scaledX) * t;
+            const interpolatedY = scaledY + (scaledNextY - scaledY) * t;
 
             circles.push(
               <View
@@ -2065,7 +2093,12 @@ function WhiteboardGame({ onClose, onComplete }) {
               <Text style={styles.emptySubtext}>Create and save drawings to see them here</Text>
             </View>
           ) : (
-            savedDrawings.map((drawing) => (
+            savedDrawings.map((drawing) => {
+              // Calculate scale factors if canvas dimensions are available
+              const scaleX = drawing.canvasWidth ? 1 / (drawing.canvasWidth / 350) : 1; // 350 is approximate gallery canvas width
+              const scaleY = drawing.canvasHeight ? 1 / (drawing.canvasHeight / 350) : 1;
+
+              return (
               <View key={drawing.id} style={styles.whiteboardGalleryItem}>
                 <TouchableOpacity
                   onPress={() => setSelectedDrawing(drawing)}
@@ -2075,7 +2108,7 @@ function WhiteboardGame({ onClose, onComplete }) {
                     styles.whiteboardGalleryCanvas,
                     { backgroundColor: drawing.backgroundColor || 'white' }
                   ]}>
-                    {drawing.paths.map((pathData, index) => renderPath(pathData, index))}
+                    {drawing.paths.map((pathData, index) => renderPath(pathData, index, scaleX, scaleY))}
                   </View>
                 </TouchableOpacity>
                 <View style={styles.whiteboardGalleryFooter}>
@@ -2090,7 +2123,8 @@ function WhiteboardGame({ onClose, onComplete }) {
                   </TouchableOpacity>
                 </View>
               </View>
-            ))
+              );
+            })
           )}
         </ScrollView>
       )}
@@ -2223,14 +2257,21 @@ function WhiteboardGame({ onClose, onComplete }) {
           >
             <Text style={styles.drawingViewerCloseText}>✕</Text>
           </TouchableOpacity>
-          {selectedDrawing && (
+          {selectedDrawing && (() => {
+            // Calculate scale factors for viewer
+            const viewerWidth = 350; // Approximate viewer canvas width (90% of screen)
+            const scaleX = selectedDrawing.canvasWidth ? viewerWidth / selectedDrawing.canvasWidth : 1;
+            const scaleY = selectedDrawing.canvasHeight ? viewerWidth / selectedDrawing.canvasHeight : 1;
+
+            return (
             <View style={[
               styles.drawingViewerCanvas,
               { backgroundColor: selectedDrawing.backgroundColor || 'white' }
             ]}>
-              {selectedDrawing.paths.map((pathData, index) => renderPath(pathData, index))}
+              {selectedDrawing.paths.map((pathData, index) => renderPath(pathData, index, scaleX, scaleY))}
             </View>
-          )}
+            );
+          })()}
         </View>
       </Modal>
     </SafeAreaView>
