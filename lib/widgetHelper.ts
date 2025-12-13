@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { requestWidgetUpdate } from 'react-native-android-widget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import React from 'react';
 import { GalleryWidget } from '../widgets/GalleryWidget';
 
 export async function updateGalleryWidget() {
@@ -12,7 +13,7 @@ export async function updateGalleryWidget() {
 
       await requestWidgetUpdate({
         widgetName: 'GalleryWidget',
-        renderWidget: () => <GalleryWidget drawings={drawings} />,
+        renderWidget: () => React.createElement(GalleryWidget, { drawings }),
         widgetNotFound: () => {
           console.log('Gallery widget not added to home screen');
         },
