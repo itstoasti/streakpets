@@ -31,21 +31,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router",
-      [
-        "react-native-android-widget",
-        {
-          "widgets": [
-            {
-              "name": "GalleryWidget",
-              "label": "Couples Pet Gallery",
-              "description": "View your whiteboard drawings",
-              "minWidth": "2x2",
-              "minHeight": "2x2"
-            }
-          ]
-        }
-      ]
+      "expo-router"
     ],
     "scheme": "couplespet",
     "extra": {
