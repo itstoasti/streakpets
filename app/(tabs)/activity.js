@@ -3128,12 +3128,13 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   drawingViewerCanvas: {
-    width: '100%',
+    width: '90%',
     aspectRatio: 1,
     backgroundColor: 'white',
     borderRadius: 15,
     borderWidth: 3,
     borderColor: '#FFE5EC',
+    overflow: 'hidden',
   },
   wouldYouRatherPrompt: {
     fontSize: 20,

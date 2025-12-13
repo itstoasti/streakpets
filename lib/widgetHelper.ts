@@ -1,12 +1,18 @@
 import { Platform } from 'react-native';
 import { requestWidgetUpdate } from 'react-native-android-widget';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { GalleryWidget } from '../widgets/GalleryWidget';
 
 export async function updateGalleryWidget() {
   if (Platform.OS === 'android') {
     try {
+      // Get current drawings
+      const drawingsJson = await AsyncStorage.getItem('savedDrawings');
+      const drawings = drawingsJson ? JSON.parse(drawingsJson) : [];
+
       await requestWidgetUpdate({
         widgetName: 'GalleryWidget',
-        renderWidget: () => {}, // Will be handled by the task handler
+        renderWidget: () => <GalleryWidget drawings={drawings} />,
         widgetNotFound: () => {
           console.log('Gallery widget not added to home screen');
         },
