@@ -21,6 +21,7 @@
         "backgroundColor": "#FFE5EC"
       },
       "package": "com.couplespet.app",
+      "versionCode": 1,
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.READ_EXTERNAL_STORAGE",
