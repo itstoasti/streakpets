@@ -1,0 +1,10 @@
+<svg width="1024" height="1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1024" height="1024" fill="#FFE5EC"/>
+
+  <!-- Heart shape -->
+  <path d="M512 900 C512 900 200 650 200 450 C200 300 300 250 400 250 C450 250 512 300 512 350 C512 300 574 250 624 250 C724 250 824 300 824 450 C824 650 512 900 512 900 Z" fill="#FF1493"/>
+
+  <!-- Text -->
+  <text x="512" y="550" font-family="Arial, sans-serif" font-size="120" font-weight="bold" fill="white" text-anchor="middle">💕</text>
+</svg>
