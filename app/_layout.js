@@ -2,6 +2,16 @@ import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { Text, View } from 'react-native';
 
+// Register widgets
+if (typeof require.resolve === 'function') {
+  try {
+    require.resolve('react-native-android-widget');
+    require('../widgets');
+  } catch (e) {
+    // Widget not available
+  }
+}
+
 // Simple error boundary setup
 export default function RootLayout() {
   useEffect(() => {

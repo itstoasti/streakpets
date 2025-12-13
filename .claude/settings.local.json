@@ -28,7 +28,12 @@
       "WebFetch(domain:expo.dev)",
       "Bash(npx expo:*)",
       "Bash(./gradlew assembleDebug)",
-      "Bash(git restore package.json)"
+      "Bash(git restore package.json)",
+      "WebSearch",
+      "WebFetch(domain:saleksovski.github.io)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:github.com)",
+      "Bash(cat:*)"
     ]
   }
 }
