@@ -10,12 +10,12 @@ export const widgetConfig = {
       name: 'GalleryWidget',
       label: 'Couples Pet Gallery',
       description: 'View your whiteboard drawings',
-      minWidth: '2x2',
-      minHeight: '2x2',
-      maxWidth: '4x4',
-      maxHeight: '4x4',
+      minWidth: '200dp',
+      minHeight: '200dp',
+      targetCellWidth: 2,
+      targetCellHeight: 2,
+      updatePeriodMillis: 0, // Update as frequently as possible
       previewImage: 'widget_preview',
-      updatePeriodMillis: 1800000, // Update every 30 minutes
     },
   ],
 };

@@ -33,7 +33,11 @@
       "WebFetch(domain:saleksovski.github.io)",
       "WebFetch(domain:dev.to)",
       "WebFetch(domain:github.com)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(echo:*)",
+      "Bash(cmd.exe //c \"taskkill /PID 6940 /F\")",
+      "Bash(cmd.exe //c \"taskkill /PID 19280 /F\")",
+      "WebFetch(domain:avnokifuqpazxcwynjmk.supabase.co)"
     ]
   }
 }

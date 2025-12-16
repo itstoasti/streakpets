@@ -17,6 +17,8 @@ import { getPetData, savePetData, getCurrency, saveCurrency, getStreakData, save
 import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updateGalleryWidget } from '../../lib/widgetHelper';
+import { SkiaDrawingCanvas } from '../components/SkiaDrawingCanvas';
+import { File, Paths } from 'expo-file-system';
 
 // Custom Slider Component
 function CustomSlider({ value, onValueChange, minimumValue, maximumValue, step, style }) {
@@ -103,14 +105,30 @@ export default function ActivityScreen() {
     setUserId(deviceUserId);
 
     if (isSupabaseConfigured()) {
-      const { data: coupleData } = await supabase
-        .from('couples')
-        .select('*')
-        .or(`user1_id.eq.${deviceUserId},user2_id.eq.${deviceUserId}`)
-        .single();
+      try {
+        const { data: coupleData, error } = await supabase
+          .from('couples')
+          .select('*')
+          .or(`user1_id.eq.${deviceUserId},user2_id.eq.${deviceUserId}`)
+          .single();
 
-      if (coupleData) {
-        setCouple(coupleData);
+        if (error) {
+          console.log('Supabase query error (using local mode):', error.message);
+          // Fallback to local mode
+          const localCouple = await import('../../lib/storage').then(m => m.getCoupleData());
+          if (localCouple) {
+            setCouple(localCouple);
+          }
+        } else if (coupleData) {
+          setCouple(coupleData);
+        }
+      } catch (error) {
+        console.log('Supabase error (using local mode):', error.message);
+        // Fallback to local mode
+        const localCouple = await import('../../lib/storage').then(m => m.getCoupleData());
+        if (localCouple) {
+          setCouple(localCouple);
+        }
       }
     } else {
       // Local mode
@@ -128,10 +146,14 @@ export default function ActivityScreen() {
     const newHappiness = Math.min(100, petData.happiness + amount);
 
     if (isSupabaseConfigured() && couple) {
-      await supabase
-        .from('pets')
-        .update({ happiness: newHappiness })
-        .eq('id', petData.id);
+      try {
+        await supabase
+          .from('pets')
+          .update({ happiness: newHappiness })
+          .eq('id', petData.id);
+      } catch (error) {
+        console.log('Supabase update error (continuing with local mode):', error.message);
+      }
     }
 
     // Update local storage (works in both modes)
@@ -1669,47 +1691,30 @@ function WhosMoreLikelyGame({ onClose, onComplete }) {
 
 function WhiteboardGame({ onClose, onComplete }) {
   const [currentTab, setCurrentTab] = useState('canvas');
-  const [paths, setPaths] = useState([]);
-  const [currentPath, setCurrentPath] = useState([]);
   const [currentColor, setCurrentColor] = useState('#FF1493');
   const [brushSize, setBrushSize] = useState(4);
   const [isEraser, setIsEraser] = useState(false);
   const [backgroundColor, setBackgroundColor] = useState('white');
   const [savedDrawings, setSavedDrawings] = useState([]);
+  const [widgetDrawingId, setWidgetDrawingId] = useState(null);
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [showBrushSizePicker, setShowBrushSizePicker] = useState(false);
   const [selectedDrawing, setSelectedDrawing] = useState(null);
   const canvasRef = useRef(null);
-  const currentPathRef = useRef([]);
-  const currentColorRef = useRef(currentColor);
-  const brushSizeRef = useRef(brushSize);
-  const isEraserRef = useRef(isEraser);
-  const renderCountRef = useRef(0);
 
-  const backgroundColors = [
+  const colors = [
     '#FF1493', '#FF69B4', '#FFB6D9', '#FFF0F5',
     '#FF0000', '#FF6B00', '#FFD700', '#00FF00',
     '#00BFFF', '#0000FF', '#8A2BE2', '#FF00FF',
     '#000000', '#808080', '#FFFFFF', '#8B4513'
   ];
 
-  useEffect(() => {
-    currentColorRef.current = currentColor;
-  }, [currentColor]);
-
-  useEffect(() => {
-    brushSizeRef.current = brushSize;
-  }, [brushSize]);
-
-  useEffect(() => {
-    isEraserRef.current = isEraser;
-  }, [isEraser]);
-  const colors = [
-    '#FF1493', '#FF69B4', '#FFB6D9', '#FFF0F5',
-    '#FF0000', '#FF6B00', '#FFD700', '#00FF00',
-    '#00BFFF', '#0000FF', '#8A2BE2', '#FF00FF',
-    '#000000', '#808080', '#FFFFFF', '#8B4513'
+  const backgroundColors = [
+    '#FFFFFF', '#FFF0F5', '#FFE5EC', '#FFB6D9',
+    '#FF69B4', '#FF1493', '#FF0000', '#FFD700',
+    '#00FF00', '#00BFFF', '#0000FF', '#8A2BE2',
+    '#FF00FF', '#000000', '#808080', '#F5F5F5'
   ];
 
   useEffect(() => {
@@ -1726,108 +1731,55 @@ function WhiteboardGame({ onClose, onComplete }) {
       if (drawings) {
         setSavedDrawings(JSON.parse(drawings));
       }
+      const widgetId = await AsyncStorage.getItem('widgetDrawingId');
+      if (widgetId) {
+        setWidgetDrawingId(widgetId);
+      }
     } catch (error) {
       console.error('Error loading drawings:', error);
     }
   }
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
-        const { locationX, locationY } = e.nativeEvent;
-        // Validate coordinates - reject if too close to edges (likely errant touches)
-        const minCoordinate = 5; // Minimum 5 pixels from edge
-        if (locationX >= minCoordinate && locationY >= minCoordinate &&
-            locationX !== undefined && locationY !== undefined &&
-            !isNaN(locationX) && !isNaN(locationY)) {
-          currentPathRef.current = [{ x: locationX, y: locationY }];
-          setCurrentPath([{ x: locationX, y: locationY }]);
-        }
-      },
-      onPanResponderMove: (e) => {
-        const { locationX, locationY } = e.nativeEvent;
-        // Only add point if coordinates are valid and not too close to edges
-        const minCoordinate = 5; // Minimum 5 pixels from edge
-        if (locationX >= minCoordinate && locationY >= minCoordinate &&
-            locationX !== undefined && locationY !== undefined &&
-            !isNaN(locationX) && !isNaN(locationY)) {
+  async function setAsWidgetDrawing(drawingId) {
+    try {
+      console.log('Setting widget drawing ID:', drawingId);
 
-          // Only add point if it's far enough from the last point (reduces total points)
-          let shouldAddPoint = currentPathRef.current.length === 0;
+      // Find the drawing
+      const drawing = savedDrawings.find(d => d.id === drawingId);
+      if (!drawing) {
+        showAlert('Error', 'Drawing not found');
+        return;
+      }
 
-          if (currentPathRef.current.length > 0) {
-            const lastPoint = currentPathRef.current[currentPathRef.current.length - 1];
-            const distance = Math.sqrt(
-              Math.pow(locationX - lastPoint.x, 2) + Math.pow(locationY - lastPoint.y, 2)
-            );
+      // Don't download - just use the base64 data we already have
+      // Widgets will use the base64 image data directly from drawing.image
+      console.log('Widget will use base64 data, length:', drawing.image?.length);
 
-            // Reject point if it's too far from the last point (sudden jump)
-            const maxJumpDistance = Math.max(150, brushSizeRef.current * 6);
-            if (distance > maxJumpDistance) {
-              return; // Skip this errant point
-            }
+      await AsyncStorage.setItem('widgetDrawingId', drawingId);
+      setWidgetDrawingId(drawingId);
 
-            // Only add point if moved at least 2 pixels (reduces redundant points)
-            shouldAddPoint = distance >= 2;
-          }
+      // Wait a bit for storage to complete before updating widget
+      setTimeout(async () => {
+        await updateGalleryWidget();
+        console.log('Widget update complete');
+      }, 500);
 
-          if (shouldAddPoint) {
-            currentPathRef.current = [...currentPathRef.current, { x: locationX, y: locationY }];
-
-            // Throttle rendering - only update UI every 2 points for better performance
-            renderCountRef.current++;
-            if (renderCountRef.current % 2 === 0) {
-              setCurrentPath([...currentPathRef.current]);
-            }
-          }
-        }
-      },
-      onPanResponderRelease: () => {
-        // Ensure final path is rendered
-        setCurrentPath([...currentPathRef.current]);
-        renderCountRef.current = 0;
-
-        if (currentPathRef.current.length > 1) {
-          // Calculate total path distance to avoid saving accidental taps
-          let totalDistance = 0;
-          for (let i = 1; i < currentPathRef.current.length; i++) {
-            const p1 = currentPathRef.current[i - 1];
-            const p2 = currentPathRef.current[i];
-            const distance = Math.sqrt(
-              Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2)
-            );
-            totalDistance += distance;
-          }
-
-          // Only save if path has meaningful movement (more than 2 pixels)
-          if (totalDistance > 2) {
-            const completedPath = {
-              path: [...currentPathRef.current],
-              color: isEraserRef.current ? '#FFFFFF' : currentColorRef.current,
-              size: brushSizeRef.current
-            };
-
-            setPaths(prev => [...prev, completedPath]);
-          }
-        }
-
-        currentPathRef.current = [];
-        setCurrentPath([]);
-      },
-    })
-  ).current;
+      showAlert('Success!', 'Drawing set as widget! The widget should update shortly.');
+    } catch (error) {
+      console.error('Error setting widget drawing:', error);
+      showAlert('Error', 'Failed to set widget drawing');
+    }
+  }
 
   function clearCanvas() {
-    setPaths([]);
-    setCurrentPath([]);
-    currentPathRef.current = [];
+    if (canvasRef.current) {
+      canvasRef.current.clear();
+    }
   }
 
   function undoLastStroke() {
-    if (paths.length > 0) {
-      setPaths(prev => prev.slice(0, -1));
+    if (canvasRef.current) {
+      canvasRef.current.undo();
     }
   }
 
@@ -1836,56 +1788,100 @@ function WhiteboardGame({ onClose, onComplete }) {
   }
 
   async function saveDrawing() {
-    if (paths.length === 0) {
+    if (!canvasRef.current || canvasRef.current.isEmpty()) {
       showAlert('Empty Canvas', 'Draw something first!');
       return;
     }
 
-    // Get canvas dimensions
-    return new Promise((resolve) => {
-      if (canvasRef.current) {
-        canvasRef.current.measure((x, y, width, height) => {
-          const newDrawing = {
-            id: Date.now().toString(),
-            paths: paths,
-            backgroundColor: backgroundColor,
-            createdAt: new Date().toISOString(),
-            canvasWidth: width,
-            canvasHeight: height,
-          };
+    try {
+      // Export canvas as base64 image with dimensions
+      const imageData = await canvasRef.current.exportAsImage();
 
-          const updatedDrawings = [newDrawing, ...savedDrawings];
-          setSavedDrawings(updatedDrawings);
-          resolve(updatedDrawings);
-        });
-      } else {
-        const newDrawing = {
-          id: Date.now().toString(),
-          paths: paths,
-          backgroundColor: backgroundColor,
-          createdAt: new Date().toISOString(),
-          canvasWidth: 400, // fallback
-          canvasHeight: 400,
-        };
-        const updatedDrawings = [newDrawing, ...savedDrawings];
-        setSavedDrawings(updatedDrawings);
-        resolve(updatedDrawings);
+      if (!imageData || !imageData.base64) {
+        showAlert('Error', 'Failed to export drawing');
+        return;
       }
-    }).then(async (updatedDrawings) => {
-      try {
-        await AsyncStorage.setItem('whiteboard_drawings', JSON.stringify(updatedDrawings));
-        await AsyncStorage.setItem('savedDrawings', JSON.stringify(updatedDrawings)); // For widget
-        updateGalleryWidget(); // Update widget (don't await to avoid blocking)
-        showAlert('Success!', 'Drawing saved to gallery!');
-        // Clear canvas and switch to gallery tab
-        setPaths([]);
-        setCurrentPath([]);
-        currentPathRef.current = [];
-        setCurrentTab('gallery');
-      } catch (error) {
-        showAlert('Error', 'Failed to save drawing');
+
+      const drawingId = Date.now().toString();
+      let publicUrl = null;
+
+      // Upload to Supabase Storage if configured
+      if (isSupabaseConfigured()) {
+        try {
+          console.log('Uploading drawing to Supabase storage...');
+
+          const fileName = `drawings/${drawingId}.png`;
+
+          // Decode base64 to binary
+          const binaryString = atob(imageData.base64);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+
+          console.log('Binary data size:', bytes.length, 'bytes');
+
+          // Upload to Supabase storage using ArrayBuffer
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from('widget-images')
+            .upload(fileName, bytes.buffer, {
+              contentType: 'image/png',
+              upsert: false,
+            });
+
+          if (uploadError) {
+            console.error('Supabase upload error:', uploadError);
+            console.error('Error message:', uploadError.message);
+          } else {
+            // Get public URL
+            const { data: urlData } = supabase.storage
+              .from('widget-images')
+              .getPublicUrl(fileName);
+
+            publicUrl = urlData.publicUrl;
+            console.log('Upload successful!');
+            console.log('Public URL:', publicUrl);
+          }
+        } catch (uploadError) {
+          console.error('Error uploading to Supabase:', uploadError);
+          console.error('Error message:', uploadError.message);
+        }
       }
-    });
+
+      // Also save locally as fallback
+      const fileName = `drawing_${drawingId}.png`;
+      const file = new File(Paths.document, fileName);
+      await file.write(imageData.base64, { encoding: 'base64' });
+      const localPath = file.uri.replace('file://', '');
+
+      const newDrawing = {
+        id: drawingId,
+        image: imageData.base64, // Keep base64 for gallery display
+        fileUri: localPath, // Local file path as fallback
+        publicUrl: publicUrl, // Supabase public URL for widget
+        canvasWidth: imageData.width,
+        canvasHeight: imageData.height,
+        backgroundColor: backgroundColor,
+        createdAt: new Date().toISOString(),
+      };
+
+      const updatedDrawings = [newDrawing, ...savedDrawings];
+      setSavedDrawings(updatedDrawings);
+
+      // Save to storage
+      await AsyncStorage.setItem('whiteboard_drawings', JSON.stringify(updatedDrawings));
+      await AsyncStorage.setItem('savedDrawings', JSON.stringify(updatedDrawings)); // For widget
+      updateGalleryWidget(); // Update widget
+
+      showAlert('Success!', 'Drawing saved to gallery!');
+
+      // Clear canvas and switch to gallery tab
+      canvasRef.current.clear();
+      setCurrentTab('gallery');
+    } catch (error) {
+      console.error('Save error:', error);
+      showAlert('Error', 'Failed to save drawing');
+    }
   }
 
   async function deleteDrawing(drawingId) {
@@ -1898,14 +1894,50 @@ function WhiteboardGame({ onClose, onComplete }) {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            // Find the drawing to get its file URI
+            const drawingToDelete = savedDrawings.find(d => d.id === drawingId);
+
             const updatedDrawings = savedDrawings.filter(drawing => drawing.id !== drawingId);
             setSavedDrawings(updatedDrawings);
 
             try {
+              // Delete from Supabase storage if it exists
+              if (drawingToDelete?.publicUrl && isSupabaseConfigured()) {
+                try {
+                  const fileName = `drawings/${drawingToDelete.id}.png`;
+                  const { error: deleteError } = await supabase.storage
+                    .from('widget-images')
+                    .remove([fileName]);
+
+                  if (deleteError) {
+                    console.error('Supabase delete error:', deleteError);
+                  } else {
+                    console.log('Deleted from Supabase storage:', fileName);
+                  }
+                } catch (supabaseError) {
+                  console.error('Error deleting from Supabase:', supabaseError);
+                }
+              }
+
+              // Delete local file if it exists
+              if (drawingToDelete?.fileUri) {
+                try {
+                  const file = new File(drawingToDelete.fileUri);
+                  if (await file.exists()) {
+                    await file.delete();
+                    console.log('Deleted local file:', drawingToDelete.fileUri);
+                  }
+                } catch (fileError) {
+                  console.error('Error deleting file:', fileError);
+                  // Continue anyway to delete from storage
+                }
+              }
+
               await AsyncStorage.setItem('whiteboard_drawings', JSON.stringify(updatedDrawings));
               await AsyncStorage.setItem('savedDrawings', JSON.stringify(updatedDrawings)); // For widget
               updateGalleryWidget(); // Update widget
             } catch (error) {
+              console.error('Delete error:', error);
               Alert.alert('Error', 'Failed to delete drawing');
             }
           },
@@ -2055,18 +2087,12 @@ function WhiteboardGame({ onClose, onComplete }) {
             </TouchableOpacity>
           </View>
 
-          <View
+          <SkiaDrawingCanvas
             ref={canvasRef}
-            style={[styles.whiteboardCanvas, { backgroundColor: backgroundColor }]}
-            {...panResponder.panHandlers}
-          >
-            {paths.map((pathData, index) => renderPath(pathData, index))}
-            {currentPath.length > 0 && renderPath({
-              path: currentPath,
-              color: isEraser ? backgroundColor : currentColor,
-              size: brushSize
-            }, 'current')}
-          </View>
+            backgroundColor={backgroundColor}
+            strokeColor={isEraser ? backgroundColor : currentColor}
+            strokeWidth={brushSize}
+          />
 
           {/* Tool Selection */}
           <View style={styles.whiteboardToolBar}>
@@ -2094,9 +2120,11 @@ function WhiteboardGame({ onClose, onComplete }) {
             </View>
           ) : (
             savedDrawings.map((drawing) => {
-              // Calculate scale factors if canvas dimensions are available
-              const scaleX = drawing.canvasWidth ? 1 / (drawing.canvasWidth / 350) : 1; // 350 is approximate gallery canvas width
-              const scaleY = drawing.canvasHeight ? 1 / (drawing.canvasHeight / 350) : 1;
+              // Calculate uniform scale to maintain aspect ratio
+              const targetSize = 350; // Approximate gallery canvas width
+              const scaleX = drawing.canvasWidth ? targetSize / drawing.canvasWidth : 1;
+              const scaleY = drawing.canvasHeight ? targetSize / drawing.canvasHeight : 1;
+              const scale = Math.min(scaleX, scaleY); // Use minimum to fit entire drawing
 
               return (
               <View key={drawing.id} style={styles.whiteboardGalleryItem}>
@@ -2108,19 +2136,43 @@ function WhiteboardGame({ onClose, onComplete }) {
                     styles.whiteboardGalleryCanvas,
                     { backgroundColor: drawing.backgroundColor || 'white' }
                   ]}>
-                    {drawing.paths.map((pathData, index) => renderPath(pathData, index, scaleX, scaleY))}
+                    {drawing.image ? (
+                      <Image
+                        source={{ uri: `data:image/png;base64,${drawing.image}` }}
+                        style={{ width: '100%', height: '100%' }}
+                        resizeMode="contain"
+                      />
+                    ) : (
+                      drawing.paths?.map((pathData, index) => renderPath(pathData, index, scale, scale))
+                    )}
                   </View>
                 </TouchableOpacity>
                 <View style={styles.whiteboardGalleryFooter}>
                   <Text style={styles.whiteboardGalleryDate}>
                     {new Date(drawing.createdAt).toLocaleDateString()}
                   </Text>
-                  <TouchableOpacity
-                    style={styles.whiteboardDeleteButton}
-                    onPress={() => deleteDrawing(drawing.id)}
-                  >
-                    <Text style={styles.whiteboardDeleteText}>Delete</Text>
-                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <TouchableOpacity
+                      style={[
+                        styles.whiteboardWidgetButton,
+                        widgetDrawingId === drawing.id && styles.whiteboardWidgetButtonActive
+                      ]}
+                      onPress={() => setAsWidgetDrawing(drawing.id)}
+                    >
+                      <Text style={[
+                        styles.whiteboardWidgetText,
+                        widgetDrawingId === drawing.id && { color: 'white' }
+                      ]}>
+                        {widgetDrawingId === drawing.id ? '✓ Widget' : 'Set Widget'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.whiteboardDeleteButton}
+                      onPress={() => deleteDrawing(drawing.id)}
+                    >
+                      <Text style={styles.whiteboardDeleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
               );
@@ -2257,21 +2309,28 @@ function WhiteboardGame({ onClose, onComplete }) {
           >
             <Text style={styles.drawingViewerCloseText}>✕</Text>
           </TouchableOpacity>
-          {selectedDrawing && (() => {
-            // Calculate scale factors for viewer
-            const viewerWidth = 350; // Approximate viewer canvas width (90% of screen)
-            const scaleX = selectedDrawing.canvasWidth ? viewerWidth / selectedDrawing.canvasWidth : 1;
-            const scaleY = selectedDrawing.canvasHeight ? viewerWidth / selectedDrawing.canvasHeight : 1;
-
-            return (
+          {selectedDrawing && (
             <View style={[
               styles.drawingViewerCanvas,
               { backgroundColor: selectedDrawing.backgroundColor || 'white' }
             ]}>
-              {selectedDrawing.paths.map((pathData, index) => renderPath(pathData, index, scaleX, scaleY))}
+              {selectedDrawing.image ? (
+                <Image
+                  source={{ uri: `data:image/png;base64,${selectedDrawing.image}` }}
+                  style={{ width: '100%', height: '100%' }}
+                  resizeMode="contain"
+                />
+              ) : (
+                selectedDrawing.paths?.map((pathData, index) => {
+                  const viewerSize = 350;
+                  const scaleX = selectedDrawing.canvasWidth ? viewerSize / selectedDrawing.canvasWidth : 1;
+                  const scaleY = selectedDrawing.canvasHeight ? viewerSize / selectedDrawing.canvasHeight : 1;
+                  const scale = Math.min(scaleX, scaleY);
+                  return renderPath(pathData, index, scale, scale);
+                })
+              )}
             </View>
-            );
-          })()}
+          )}
         </View>
       </Modal>
     </SafeAreaView>
@@ -2680,7 +2739,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   whiteboardCanvas: {
-    flex: 1,
+    width: '100%',
+    aspectRatio: 1, // Square canvas - consistent size
     backgroundColor: 'white',
     margin: 15,
     borderRadius: 15,
@@ -2817,6 +2877,20 @@ const styles = StyleSheet.create({
   },
   whiteboardDeleteText: {
     color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  whiteboardWidgetButton: {
+    backgroundColor: '#FFB6D9',
+    paddingVertical: 6,
+    paddingHorizontal: 15,
+    borderRadius: 12,
+  },
+  whiteboardWidgetButtonActive: {
+    backgroundColor: '#FF69B4',
+  },
+  whiteboardWidgetText: {
+    color: '#FF1493',
     fontSize: 12,
     fontWeight: 'bold',
   },

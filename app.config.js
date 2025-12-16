@@ -5,11 +5,11 @@ module.exports = ({ config }) => {
         name: 'GalleryWidget',
         label: 'Couples Pet Gallery',
         description: 'View your whiteboard drawings',
-        minWidth: '320dp',
-        minHeight: '120dp',
-        targetCellWidth: 4,
+        minWidth: '200dp',
+        minHeight: '200dp',
+        targetCellWidth: 2,
         targetCellHeight: 2,
-        updatePeriodMillis: 1800000, // 30 minutes
+        updatePeriodMillis: 0, // Update as frequently as possible
         previewImage: './assets/icon.png', // Using existing icon as placeholder
       },
     ],

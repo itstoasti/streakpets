@@ -159,8 +159,18 @@ export default function PetScreen() {
             setShowPairModal(true);
           }
         } catch (dbError) {
-          console.error('Database error:', dbError);
-          setShowPairModal(true);
+          console.log('Supabase tables not set up (using local mode):', dbError.message);
+          // Fallback to local data
+          if (localCouple) {
+            setCouple(localCouple);
+            if (localPet) {
+              setPet(localPet);
+            } else {
+              setShowPetSelectModal(true);
+            }
+          } else {
+            setShowPairModal(true);
+          }
         }
       } else {
         // Local-only mode
@@ -189,41 +199,53 @@ export default function PetScreen() {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
 
     if (isSupabaseConfigured()) {
-      // Supabase mode
-      const { data, error } = await supabase
-        .from('couples')
-        .insert({
-          user1_id: userId,
-          invite_code: code,
-        })
-        .select()
-        .single();
+      // Supabase mode - try to use database, fallback to local
+      try {
+        const { data, error } = await supabase
+          .from('couples')
+          .insert({
+            user1_id: userId,
+            invite_code: code,
+          })
+          .select()
+          .single();
 
-      if (error) {
-        Alert.alert('Error', error.message);
-        return;
+        if (error) {
+          console.log('Supabase insert error, using local mode:', error.message);
+          // Fallback to local mode
+          createLocalCouple(code);
+          return;
+        }
+
+        setCouple(data);
+        await saveCoupleData(data);
+        showAlert('Success', `Share this code with your partner: ${code}`);
+        await Clipboard.setStringAsync(code);
+      } catch (err) {
+        console.log('Supabase error, using local mode:', err.message);
+        // Fallback to local mode
+        createLocalCouple(code);
       }
-
-      setCouple(data);
-      await saveCoupleData(data);
-      showAlert('Success', `Share this code with your partner: ${code}`);
-      await Clipboard.setStringAsync(code);
     } else {
       // Local-only mode
-      const localCouple = {
-        id: 'local_' + Date.now(),
-        user1_id: userId,
-        user2_id: null,
-        invite_code: code,
-        created_at: new Date().toISOString(),
-      };
-
-      setCouple(localCouple);
-      await saveCoupleData(localCouple);
-      setShowPairModal(false);
-      setShowPetSelectModal(true);
-      await Clipboard.setStringAsync(code);
+      createLocalCouple(code);
     }
+  }
+
+  function createLocalCouple(code) {
+    const localCouple = {
+      id: 'local_' + Date.now(),
+      user1_id: userId,
+      user2_id: null,
+      invite_code: code,
+      created_at: new Date().toISOString(),
+    };
+
+    setCouple(localCouple);
+    saveCoupleData(localCouple);
+    setShowPairModal(false);
+    setShowPetSelectModal(true);
+    Clipboard.setStringAsync(code);
   }
 
   async function joinCouple() {
@@ -289,45 +311,56 @@ export default function PetScreen() {
     const finalPetName = petName.trim();
 
     if (isSupabaseConfigured()) {
-      // Supabase mode
-      const { data, error } = await supabase
-        .from('pets')
-        .insert({
-          couple_id: couple.id,
-          pet_type: selectedPetType,
-          pet_name: finalPetName,
-          happiness: 50,
-          last_decay: new Date().toISOString(),
-        })
-        .select()
-        .single();
+      // Supabase mode - try to use database, fallback to local
+      try {
+        const { data, error } = await supabase
+          .from('pets')
+          .insert({
+            couple_id: couple.id,
+            pet_type: selectedPetType,
+            pet_name: finalPetName,
+            happiness: 50,
+            last_decay: new Date().toISOString(),
+          })
+          .select()
+          .single();
 
-      if (error) {
-        Alert.alert('Error', error.message);
-        return;
+        if (error) {
+          console.log('Supabase pet insert error, using local mode:', error.message);
+          // Fallback to local mode
+          createLocalPet(finalPetName);
+          return;
+        }
+
+        setPet(data);
+        await savePetData(data);
+        setShowPetNameModal(false);
+        setPetName('');
+      } catch (err) {
+        console.log('Supabase error, using local mode:', err.message);
+        createLocalPet(finalPetName);
       }
-
-      setPet(data);
-      await savePetData(data);
-      setShowPetNameModal(false);
-      setPetName('');
     } else {
       // Local-only mode
-      const localPet = {
-        id: 'local_pet_' + Date.now(),
-        couple_id: couple.id,
-        pet_type: selectedPetType,
-        pet_name: finalPetName,
-        happiness: 50,
-        last_decay: new Date().toISOString(),
-        created_at: new Date().toISOString(),
-      };
-
-      setPet(localPet);
-      await savePetData(localPet);
-      setShowPetNameModal(false);
-      setPetName('');
+      createLocalPet(finalPetName);
     }
+  }
+
+  async function createLocalPet(finalPetName) {
+    const localPet = {
+      id: 'local_pet_' + Date.now(),
+      couple_id: couple.id,
+      pet_type: selectedPetType,
+      pet_name: finalPetName,
+      happiness: 50,
+      last_decay: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    };
+
+    setPet(localPet);
+    await savePetData(localPet);
+    setShowPetNameModal(false);
+    setPetName('');
 
     // Add to owned pets (first pet is free)
     const owned = await getOwnedPets();
