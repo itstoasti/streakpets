@@ -29,34 +29,46 @@ export default function NotesScreen() {
   }, []);
 
   async function loadData() {
-    // Get device user ID from AsyncStorage
-    const deviceUserId = await import('../../lib/storage').then(m => m.getDeviceUserId());
-    setUserId(deviceUserId);
+    try {
+      // Get authenticated user
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-    // Load couple from local storage
-    const localCouple = await getCoupleData();
-
-    if (isSupabaseConfigured()) {
-      // Try Supabase
-      const { data: coupleData } = await supabase
-        .from('couples')
-        .select('*')
-        .or(`user1_id.eq.${deviceUserId},user2_id.eq.${deviceUserId}`)
-        .single();
-
-      if (coupleData) {
-        setCouple(coupleData);
-        await loadNotes(coupleData.id);
+      if (authError || !user) {
+        console.log('No authenticated user, skipping data load');
+        setLoading(false);
+        return;
       }
-    } else {
-      // Local only mode
-      if (localCouple) {
-        setCouple(localCouple);
-        await loadNotesLocal();
+
+      setUserId(user.id);
+
+      // Load couple from local storage
+      const localCouple = await getCoupleData();
+
+      if (isSupabaseConfigured()) {
+        // Try Supabase
+        const { data: coupleData } = await supabase
+          .from('couples')
+          .select('*')
+          .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
+          .single();
+
+        if (coupleData) {
+          setCouple(coupleData);
+          await loadNotes(coupleData.id);
+        }
+      } else {
+        // Local only mode
+        if (localCouple) {
+          setCouple(localCouple);
+          await loadNotesLocal();
+        }
       }
+
+      setLoading(false);
+    } catch (error) {
+      console.log('Error loading data:', error.message);
+      setLoading(false);
     }
-
-    setLoading(false);
   }
 
   async function loadNotes(coupleId) {
@@ -118,7 +130,7 @@ export default function NotesScreen() {
     if (isSupabaseConfigured() && couple) {
       const { error } = await supabase.from('notes').insert({
         couple_id: couple.id,
-        user_id: userId,
+        auth_user_id: userId,
         content: newNoteContent.trim(),
       });
 
@@ -130,7 +142,7 @@ export default function NotesScreen() {
       // Local mode
       const newNote = {
         id: Date.now().toString(),
-        user_id: userId,
+        auth_user_id: userId,
         content: newNoteContent.trim(),
         created_at: new Date().toISOString(),
       };
@@ -272,7 +284,7 @@ export default function NotesScreen() {
                     minute: '2-digit',
                   })}
                 </Text>
-                {note.user_id === userId && (
+                {note.auth_user_id === userId && (
                   <TouchableOpacity onPress={() => deleteNote(note.id)}>
                     <Text style={styles.deleteText}>Delete</Text>
                   </TouchableOpacity>

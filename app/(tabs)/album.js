@@ -31,22 +31,34 @@ export default function AlbumScreen() {
   }, []);
 
   async function loadData() {
-    // Get device user ID from AsyncStorage
-    const deviceUserId = await import('../../lib/storage').then(m => m.getDeviceUserId());
-    setUserId(deviceUserId);
+    try {
+      // Get authenticated user
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-    const { data: coupleData } = await supabase
-      .from('couples')
-      .select('*')
-      .or(`user1_id.eq.${deviceUserId},user2_id.eq.${deviceUserId}`)
-      .single();
+      if (authError || !user) {
+        console.log('No authenticated user, skipping data load');
+        setLoading(false);
+        return;
+      }
 
-    if (coupleData) {
-      setCouple(coupleData);
-      await loadMemories(coupleData.id);
+      setUserId(user.id);
+
+      const { data: coupleData } = await supabase
+        .from('couples')
+        .select('*')
+        .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
+        .single();
+
+      if (coupleData) {
+        setCouple(coupleData);
+        await loadMemories(coupleData.id);
+      }
+
+      setLoading(false);
+    } catch (error) {
+      console.log('Error loading data:', error.message);
+      setLoading(false);
     }
-
-    setLoading(false);
   }
 
   async function loadMemories(coupleId) {
@@ -134,7 +146,7 @@ export default function AlbumScreen() {
       // In production, you'd upload to Supabase Storage and get a URL
       const { error } = await supabase.from('memories').insert({
         couple_id: couple.id,
-        user_id: userId,
+        auth_user_id: userId,
         description: newMemoryDescription.trim(),
         image_url: selectedImage, // In production, use the uploaded URL
       });
@@ -249,7 +261,7 @@ export default function AlbumScreen() {
                     <Text style={styles.memoryDate}>
                       {new Date(memory.created_at).toLocaleDateString()}
                     </Text>
-                    {memory.user_id === userId && (
+                    {memory.auth_user_id === userId && (
                       <TouchableOpacity onPress={() => deleteMemory(memory.id)}>
                         <Text style={styles.deleteText}>Delete</Text>
                       </TouchableOpacity>

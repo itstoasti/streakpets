@@ -100,16 +100,23 @@ export default function ActivityScreen() {
   }
 
   async function loadCoupleData() {
-    // Get device user ID from AsyncStorage
-    const deviceUserId = await import('../../lib/storage').then(m => m.getDeviceUserId());
-    setUserId(deviceUserId);
+    try {
+      // Get authenticated user
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        console.log('No authenticated user, skipping data load');
+        return;
+      }
+
+      setUserId(user.id);
 
     if (isSupabaseConfigured()) {
       try {
         const { data: coupleData, error } = await supabase
           .from('couples')
           .select('*')
-          .or(`user1_id.eq.${deviceUserId},user2_id.eq.${deviceUserId}`)
+          .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
           .single();
 
         if (error) {
@@ -136,6 +143,9 @@ export default function ActivityScreen() {
       if (localCouple) {
         setCouple(localCouple);
       }
+    }
+    } catch (error) {
+      console.log('Error loading couple data:', error.message);
     }
   }
 

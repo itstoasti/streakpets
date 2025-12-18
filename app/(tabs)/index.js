@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -10,12 +10,14 @@ import {
   Modal,
   Image,
 } from 'react-native';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
-import { getDeviceUserId, getCoupleData, saveCoupleData, clearAllData, getPetData, savePetData, getCurrency, saveCurrency, getOwnedPets, saveOwnedPets, getStreakData, saveStreakData, getCurrentPetType, saveCurrentPetType, getSpecificPetData, saveSpecificPetData } from '../../lib/storage';
+import { getCoupleData, saveCoupleData, clearAllData, getPetData, savePetData, getCurrency, saveCurrency, getOwnedPets, saveOwnedPets, getStreakData, saveStreakData, getCurrentPetType, saveCurrentPetType, getSpecificPetData, saveSpecificPetData } from '../../lib/storage';
+import { useAuth } from '../../lib/authContext';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Clipboard from 'expo-clipboard';
 import * as Animatable from 'react-native-animatable';
+import { Ionicons } from '@expo/vector-icons';
 
 const PETS = {
   parrot: {
@@ -58,6 +60,8 @@ const PETS = {
 
 export default function PetScreen() {
   const isFocused = useIsFocused();
+  const navigation = useNavigation();
+  const { signOut } = useAuth();
   const [couple, setCouple] = useState(null);
   const [pet, setPet] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -75,6 +79,8 @@ export default function PetScreen() {
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
   const [showStreakCalendar, setShowStreakCalendar] = useState(false);
   const [showCoinsModal, setShowCoinsModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [userEmail, setUserEmail] = useState('');
 
   useEffect(() => {
     loadUserData();
@@ -88,6 +94,20 @@ export default function PetScreen() {
       reloadPetData();
     }
   }, [isFocused]);
+
+  // Add profile button to header
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => setShowProfileModal(true)}
+          style={{ marginRight: 15 }}
+        >
+          <Ionicons name="person-circle" size={32} color="#FF1493" />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation]);
 
   function showAlert(title, message) {
     setCustomAlert({ visible: true, title, message });
@@ -112,9 +132,18 @@ export default function PetScreen() {
 
   async function loadUserData() {
     try {
-      // Get device user ID
-      const deviceUserId = await getDeviceUserId();
-      setUserId(deviceUserId);
+      // Get authenticated user
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        console.error('Auth error:', authError);
+        setError('Authentication required');
+        setLoading(false);
+        return;
+      }
+
+      setUserId(user.id);
+      setUserEmail(user.email);
 
       // Load currency and streak
       const userCurrency = await getCurrency();
@@ -130,47 +159,96 @@ export default function PetScreen() {
 
       if (isSupabaseConfigured()) {
         // Supabase mode - sync with database
+        let coupleData = null;
+        let petData = null;
+
+        // Query couple data - get all and use the most recent one
         try {
-          const { data: coupleData, error: coupleError } = await supabase
+          const { data, error: coupleError } = await supabase
             .from('couples')
             .select('*')
-            .or(`user1_id.eq.${deviceUserId},user2_id.eq.${deviceUserId}`)
-            .single();
+            .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
+            .order('created_at', { ascending: false })
+            .limit(1);
 
-          if (coupleData && !coupleError) {
-            setCouple(coupleData);
+          console.log('Couple query result:', {
+            data,
+            coupleError: coupleError?.message,
+            userId: user.id,
+            rowCount: data?.length
+          });
+
+          if (coupleError) {
+            console.error('Couple query error:', coupleError);
+          } else if (data && data.length > 0) {
+            coupleData = data[0];
+            if (data.length > 1) {
+              console.warn('⚠️ User has multiple couples! Using most recent one.');
+            }
+          }
+        } catch (err) {
+          console.error('Exception querying couples:', err);
+        }
+
+        // Process couple data
+        if (coupleData) {
+          console.log('✅ Found couple:', coupleData.id);
+          setCouple(coupleData);
+          try {
             await saveCoupleData(coupleData);
+          } catch (err) {
+            console.error('Error saving couple locally:', err);
+          }
 
-            // Load pet data
-            const { data: petData } = await supabase
+          // Query pet data
+          try {
+            const { data, error: petError } = await supabase
               .from('pets')
               .select('*')
               .eq('couple_id', coupleData.id)
-              .single();
+              .maybeSingle();
 
-            if (petData) {
-              setPet(petData);
+            console.log('Pet query result:', {
+              data: data ? { id: data.id, name: data.pet_name } : null,
+              petError: petError?.message
+            });
+
+            if (petError && petError.code !== 'PGRST116') {
+              console.error('Pet query error:', petError);
+            } else {
+              petData = data;
+            }
+          } catch (err) {
+            console.error('Exception querying pets:', err);
+          }
+
+          // Process pet data
+          if (petData) {
+            console.log('✅ Loaded pet from Supabase:', petData.pet_name);
+            setPet(petData);
+            try {
               await savePetData(petData);
-            } else {
-              setShowPetSelectModal(true);
+            } catch (err) {
+              console.error('Error saving pet locally:', err);
             }
+            console.log('🚪 Closing all modals - user has couple and pet');
+            setShowPairModal(false);
+            setShowPetSelectModal(false);
+          } else if (localPet) {
+            console.log('⚠️ Using local pet data as fallback:', localPet.pet_name);
+            setPet(localPet);
+            console.log('🚪 Closing all modals - using local pet');
+            setShowPairModal(false);
+            setShowPetSelectModal(false);
           } else {
-            // No couple found
-            setShowPairModal(true);
+            console.log('ℹ️ No pet found for this couple, showing pet select modal');
+            setShowPairModal(false);
+            setShowPetSelectModal(true);
           }
-        } catch (dbError) {
-          console.log('Supabase tables not set up (using local mode):', dbError.message);
-          // Fallback to local data
-          if (localCouple) {
-            setCouple(localCouple);
-            if (localPet) {
-              setPet(localPet);
-            } else {
-              setShowPetSelectModal(true);
-            }
-          } else {
-            setShowPairModal(true);
-          }
+        } else {
+          console.log('❌ No couple found for user, showing pair modal');
+          setShowPairModal(true);
+          setShowPetSelectModal(false);
         }
       } else {
         // Local-only mode
@@ -198,45 +276,53 @@ export default function PetScreen() {
   async function createCouple() {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
 
-    if (isSupabaseConfigured()) {
-      // Supabase mode - try to use database, fallback to local
-      try {
-        const { data, error } = await supabase
-          .from('couples')
-          .insert({
-            user1_id: userId,
-            invite_code: code,
-          })
-          .select()
-          .single();
+    if (!isSupabaseConfigured()) {
+      Alert.alert(
+        'Configuration Error',
+        'App is not properly configured. Please check your setup.'
+      );
+      return;
+    }
 
-        if (error) {
-          console.log('Supabase insert error, using local mode:', error.message);
-          // Fallback to local mode
-          createLocalCouple(code);
-          return;
-        }
+    try {
+      const { data, error } = await supabase
+        .from('couples')
+        .insert({
+          auth_user1_id: userId,
+          invite_code: code,
+        })
+        .select()
+        .single();
 
-        setCouple(data);
-        await saveCoupleData(data);
-        showAlert('Success', `Share this code with your partner: ${code}`);
-        await Clipboard.setStringAsync(code);
-      } catch (err) {
-        console.log('Supabase error, using local mode:', err.message);
-        // Fallback to local mode
-        createLocalCouple(code);
+      if (error) {
+        console.error('Failed to create couple:', error.message, error);
+        Alert.alert(
+          'Failed to Create Couple',
+          'Could not save your couple. Please check your internet connection and try again.\n\nError: ' + error.message
+        );
+        return;
       }
-    } else {
-      // Local-only mode
-      createLocalCouple(code);
+
+      setCouple(data);
+      await saveCoupleData(data);
+      setShowPairModal(false);
+      setShowPetSelectModal(true);
+      showAlert('Success', `Share this code with your partner: ${code}`);
+      await Clipboard.setStringAsync(code);
+    } catch (err) {
+      console.error('Unexpected error creating couple:', err);
+      Alert.alert(
+        'Error',
+        'An unexpected error occurred. Please try again.\n\nError: ' + err.message
+      );
     }
   }
 
   function createLocalCouple(code) {
     const localCouple = {
       id: 'local_' + Date.now(),
-      user1_id: userId,
-      user2_id: null,
+      auth_user1_id: userId,
+      auth_user2_id: null,
       invite_code: code,
       created_at: new Date().toISOString(),
     };
@@ -256,44 +342,67 @@ export default function PetScreen() {
 
     if (!isSupabaseConfigured()) {
       Alert.alert(
-        'Local Mode',
-        'Joining couples requires Supabase configuration. For now, just create a couple to test locally!'
+        'Configuration Error',
+        'App is not properly configured. Please check your setup.'
       );
       return;
     }
 
-    const { data: coupleData, error: fetchError } = await supabase
-      .from('couples')
-      .select('*')
-      .eq('invite_code', inviteCode.toUpperCase())
-      .single();
+    try {
+      const { data: coupleData, error: fetchError } = await supabase
+        .from('couples')
+        .select('*')
+        .eq('invite_code', inviteCode.toUpperCase())
+        .single();
 
-    if (fetchError || !coupleData) {
-      Alert.alert('Error', 'Invalid invite code');
-      return;
+      if (fetchError || !coupleData) {
+        console.error('Error fetching couple:', fetchError);
+        Alert.alert('Invalid Code', 'The invite code you entered was not found. Please check and try again.');
+        return;
+      }
+
+      if (coupleData.auth_user2_id) {
+        Alert.alert('Already Paired', 'This couple is already complete. Please create a new couple or ask for a different code.');
+        return;
+      }
+
+      const { error: updateError } = await supabase
+        .from('couples')
+        .update({ auth_user2_id: userId })
+        .eq('id', coupleData.id);
+
+      if (updateError) {
+        console.error('Error joining couple:', updateError);
+        Alert.alert('Error', 'Could not join couple. Please try again.\n\nError: ' + updateError.message);
+        return;
+      }
+
+      const updatedCouple = { ...coupleData, auth_user2_id: userId };
+      setCouple(updatedCouple);
+      await saveCoupleData(updatedCouple);
+      setShowPairModal(false);
+
+      // Check if couple already has a pet
+      const { data: existingPet } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('couple_id', updatedCouple.id)
+        .single();
+
+      if (existingPet) {
+        // Couple already has a pet, load it
+        setPet(existingPet);
+        await savePetData(existingPet);
+        showAlert('Success', 'Joined couple! Welcome back!');
+      } else {
+        // No pet yet, show selection
+        setShowPetSelectModal(true);
+        showAlert('Success', 'Joined couple! Now choose your pet together.');
+      }
+    } catch (err) {
+      console.error('Unexpected error joining couple:', err);
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.\n\nError: ' + err.message);
     }
-
-    if (coupleData.user2_id) {
-      Alert.alert('Error', 'This couple is already complete');
-      return;
-    }
-
-    const { error: updateError } = await supabase
-      .from('couples')
-      .update({ user2_id: userId })
-      .eq('id', coupleData.id);
-
-    if (updateError) {
-      Alert.alert('Error', updateError.message);
-      return;
-    }
-
-    const updatedCouple = { ...coupleData, user2_id: userId };
-    setCouple(updatedCouple);
-    await saveCoupleData(updatedCouple);
-    setShowPairModal(false);
-    setShowPetSelectModal(true);
-    showAlert('Success', 'Joined couple! Now choose your pet together.');
   }
 
   function handlePetTypeSelect(petType) {
@@ -310,39 +419,52 @@ export default function PetScreen() {
 
     const finalPetName = petName.trim();
 
-    if (isSupabaseConfigured()) {
-      // Supabase mode - try to use database, fallback to local
-      try {
-        const { data, error } = await supabase
-          .from('pets')
-          .insert({
-            couple_id: couple.id,
-            pet_type: selectedPetType,
-            pet_name: finalPetName,
-            happiness: 50,
-            last_decay: new Date().toISOString(),
-          })
-          .select()
-          .single();
+    if (!isSupabaseConfigured()) {
+      Alert.alert(
+        'Configuration Error',
+        'App is not properly configured. Please check your setup.'
+      );
+      return;
+    }
 
-        if (error) {
-          console.log('Supabase pet insert error, using local mode:', error.message);
-          // Fallback to local mode
-          createLocalPet(finalPetName);
-          return;
-        }
+    try {
+      const { data, error } = await supabase
+        .from('pets')
+        .insert({
+          couple_id: couple.id,
+          pet_type: selectedPetType,
+          pet_name: finalPetName,
+          happiness: 50,
+          last_decay: new Date().toISOString(),
+        })
+        .select()
+        .single();
 
-        setPet(data);
-        await savePetData(data);
-        setShowPetNameModal(false);
-        setPetName('');
-      } catch (err) {
-        console.log('Supabase error, using local mode:', err.message);
-        createLocalPet(finalPetName);
+      if (error) {
+        console.error('Failed to create pet:', error.message, error);
+        Alert.alert(
+          'Failed to Create Pet',
+          'Could not save your pet. Please check your internet connection and try again.\n\nError: ' + error.message
+        );
+        return;
       }
-    } else {
-      // Local-only mode
-      createLocalPet(finalPetName);
+
+      setPet(data);
+      await savePetData(data);
+      setShowPetNameModal(false);
+      setPetName('');
+
+      // Add to owned pets (first pet is free)
+      const owned = await getOwnedPets();
+      if (!owned.includes(selectedPetType)) {
+        await saveOwnedPets([...owned, selectedPetType]);
+      }
+    } catch (err) {
+      console.error('Unexpected error creating pet:', err);
+      Alert.alert(
+        'Error',
+        'An unexpected error occurred. Please try again.\n\nError: ' + err.message
+      );
     }
   }
 
@@ -570,22 +692,18 @@ export default function PetScreen() {
     );
   }
 
-  async function resetApp() {
+  async function handleLogout() {
     Alert.alert(
-      'Reset App',
-      'This will clear all local data. Are you sure?',
+      'Logout',
+      'Are you sure you want to logout?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Reset',
+          text: 'Logout',
           style: 'destructive',
           onPress: async () => {
-            await clearAllData();
-            setCouple(null);
-            setPet(null);
-            setShowPairModal(true);
-            const newUserId = await getDeviceUserId();
-            setUserId(newUserId);
+            await signOut();
+            // Navigation will be handled automatically by root layout
           },
         },
       ]
@@ -849,13 +967,9 @@ export default function PetScreen() {
                 >
                   <Text style={styles.copyButtonText}>Copy Code</Text>
                 </TouchableOpacity>
-                <Text style={styles.deviceIdText}>Device ID: {userId}</Text>
               </View>
             )}
 
-            <TouchableOpacity style={styles.resetButton} onPress={resetApp}>
-              <Text style={styles.resetText}>Reset App (Testing)</Text>
-            </TouchableOpacity>
           </View>
         ) : null}
       </ScrollView>
@@ -889,8 +1003,6 @@ export default function PetScreen() {
             <TouchableOpacity style={styles.button} onPress={joinCouple}>
               <Text style={styles.buttonText}>Join Couple</Text>
             </TouchableOpacity>
-
-            <Text style={styles.deviceIdInfo}>Your Device ID: {userId}</Text>
           </View>
         </View>
       </Modal>
@@ -898,33 +1010,55 @@ export default function PetScreen() {
       {/* Pet Selection Modal */}
       <Modal visible={showPetSelectModal} animationType="slide" transparent>
         <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Choose Your Pet!</Text>
-            <Text style={styles.modalSubtitle}>
-              Pick a pet to take care of together
-            </Text>
+          <ScrollView
+            style={styles.petSelectionScrollContainer}
+            contentContainerStyle={styles.petSelectionScrollContent}
+          >
+            <View style={styles.petSelectionModalContent}>
+              <Text style={styles.modalTitle}>Choose Your Pet!</Text>
+              <Text style={styles.modalSubtitle}>
+                Pick a pet to take care of together 💕
+              </Text>
+              <Text style={styles.petSelectionNote}>
+                Your first pet is free! ✨
+              </Text>
 
-            <View style={styles.petOptions}>
-              {Object.entries(PETS).map(([type, petData]) => (
-                <TouchableOpacity
-                  key={type}
-                  style={styles.petOption}
-                  onPress={() => handlePetTypeSelect(type)}
-                >
-                  {petData.image ? (
-                    <Image
-                      source={petData.image}
-                      style={styles.petOptionImage}
-                      resizeMode="contain"
-                    />
-                  ) : (
-                    <Text style={styles.petOptionEmoji}>{petData.emoji}</Text>
-                  )}
-                  <Text style={styles.petOptionText}>{petData.name}</Text>
-                </TouchableOpacity>
-              ))}
+              <View style={styles.petGrid}>
+                {Object.entries(PETS).map(([type, petData]) => (
+                  <TouchableOpacity
+                    key={type}
+                    style={styles.petCard}
+                    onPress={() => handlePetTypeSelect(type)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.petCardContent}>
+                      {petData.image ? (
+                        <Image
+                          source={petData.image}
+                          style={styles.petCardImage}
+                          resizeMode="contain"
+                        />
+                      ) : (
+                        <Text style={styles.petCardEmoji}>{petData.emoji}</Text>
+                      )}
+                      <Text style={styles.petCardTitle}>{petData.name}</Text>
+                      <Text style={styles.petCardDescription}>
+                        {type === 'parrot' && 'Colorful and chatty friend'}
+                        {type === 'penguin' && 'Adorable waddling buddy'}
+                        {type === 'dog' && 'Loyal and playful pal'}
+                        {type === 'cat' && 'Independent and affectionate'}
+                        {type === 'bunny' && 'Cute and gentle hopper'}
+                        {type === 'panda' && 'Cuddly bamboo lover'}
+                        {type === 'fox' && 'Clever and spirited'}
+                        {type === 'turtle' && 'Calm and wise companion'}
+                        {type === 'polar_bear' && 'Fluffy arctic friend'}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
 
@@ -1168,6 +1302,49 @@ export default function PetScreen() {
             <TouchableOpacity
               style={styles.closeModalButton}
               onPress={() => setShowCoinsModal(false)}
+            >
+              <Text style={styles.buttonText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Profile Modal */}
+      <Modal visible={showProfileModal} animationType="slide" transparent>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Profile</Text>
+
+            <View style={styles.profileInfo}>
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>Email:</Text>
+                <Text style={styles.profileValue}>{userEmail}</Text>
+              </View>
+
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>Current Streak:</Text>
+                <Text style={styles.profileValue}>🔥 {streakData.currentStreak} days</Text>
+              </View>
+
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>Coins:</Text>
+                <Text style={styles.profileValue}>💰 {currency}</Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.logoutButton}
+              onPress={async () => {
+                setShowProfileModal(false);
+                await signOut();
+              }}
+            >
+              <Text style={styles.logoutButtonText}>Logout</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.closeModalButton}
+              onPress={() => setShowProfileModal(false)}
             >
               <Text style={styles.buttonText}>Close</Text>
             </TouchableOpacity>
@@ -1452,31 +1629,74 @@ const styles = StyleSheet.create({
     borderColor: '#FFB6D9',
     textAlign: 'center',
   },
-  petOptions: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 20,
+  petSelectionScrollContainer: {
+    width: '100%',
+    maxHeight: '90%',
   },
-  petOption: {
+  petSelectionScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFF0F5',
     padding: 20,
-    borderRadius: 15,
-    borderWidth: 2,
+  },
+  petSelectionModalContent: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 30,
+    width: '95%',
+    maxWidth: 500,
+  },
+  petSelectionNote: {
+    fontSize: 14,
+    color: '#FF69B4',
+    textAlign: 'center',
+    marginTop: 5,
+    marginBottom: 15,
+    fontStyle: 'italic',
+  },
+  petGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginTop: 15,
+  },
+  petCard: {
+    width: '48%',
+    marginBottom: 15,
+  },
+  petCardContent: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 15,
+    alignItems: 'center',
+    borderWidth: 3,
     borderColor: '#FFE5EC',
+    shadowColor: '#FF1493',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 5,
   },
-  petOptionImage: {
-    width: 80,
-    height: 80,
+  petCardImage: {
+    width: 90,
+    height: 90,
     marginBottom: 10,
   },
-  petOptionEmoji: {
-    fontSize: 60,
+  petCardEmoji: {
+    fontSize: 70,
     marginBottom: 10,
   },
-  petOptionText: {
-    color: '#FF1493',
+  petCardTitle: {
+    fontSize: 18,
     fontWeight: 'bold',
+    color: '#FF1493',
+    marginBottom: 5,
+  },
+  petCardDescription: {
+    fontSize: 12,
+    color: '#FF69B4',
+    textAlign: 'center',
+    lineHeight: 16,
   },
   petNameDisplay: {
     fontSize: 32,
@@ -1857,5 +2077,38 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: '#32CD32',
     fontWeight: 'bold',
+  },
+  profileInfo: {
+    marginVertical: 20,
+  },
+  profileRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#FFE5EC',
+  },
+  profileLabel: {
+    fontSize: 16,
+    color: '#FF69B4',
+    fontWeight: '600',
+  },
+  profileValue: {
+    fontSize: 16,
+    color: '#333',
+    maxWidth: '60%',
+  },
+  logoutButton: {
+    backgroundColor: '#FF1493',
+    paddingVertical: 15,
+    borderRadius: 15,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  logoutButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 16,
   },
 });
