@@ -11,47 +11,59 @@ import {
   Image,
 } from 'react-native';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../lib/authContext';
+import { useIsFocused } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import * as Animatable from 'react-native-animatable';
 
 export default function AlbumScreen() {
+  const { user } = useAuth();
+  const isFocused = useIsFocused();
   const [memories, setMemories] = useState([]);
   const [couple, setCouple] = useState(null);
-  const [userId, setUserId] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newMemoryDescription, setNewMemoryDescription] = useState('');
   const [selectedImage, setSelectedImage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [viewingImage, setViewingImage] = useState(null);
+  const [showImageModal, setShowImageModal] = useState(false);
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
 
   useEffect(() => {
-    loadData();
-    subscribeToMemories();
-  }, []);
+    if (isFocused && user) {
+      loadData();
+    }
+  }, [isFocused, user]);
+
+  useEffect(() => {
+    if (couple) {
+      return subscribeToMemories();
+    }
+  }, [couple]);
+
+  function showAlert(title, message) {
+    setCustomAlert({ visible: true, title, message });
+  }
 
   async function loadData() {
     try {
-      // Get authenticated user
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-      if (authError || !user) {
-        console.log('No authenticated user, skipping data load');
+      if (!user) {
         setLoading(false);
         return;
       }
-
-      setUserId(user.id);
 
       const { data: coupleData } = await supabase
         .from('couples')
         .select('*')
         .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
-        .single();
+        .order('created_at', { ascending: false })
+        .limit(1);
 
-      if (coupleData) {
-        setCouple(coupleData);
-        await loadMemories(coupleData.id);
+      if (coupleData && coupleData.length > 0) {
+        setCouple(coupleData[0]);
+        await loadMemories(coupleData[0].id);
       }
 
       setLoading(false);
@@ -74,12 +86,20 @@ export default function AlbumScreen() {
   }
 
   function subscribeToMemories() {
+    if (!couple) return;
+
     const subscription = supabase
-      .channel('memories_changes')
+      .channel(`memories_changes_${couple.id}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'memories' },
+        {
+          event: '*',
+          schema: 'public',
+          table: 'memories',
+          filter: `couple_id=eq.${couple.id}`
+        },
         (payload) => {
+          console.log('📸 Memory change received:', payload.eventType);
           if (payload.eventType === 'INSERT') {
             setMemories(prev => [payload.new, ...prev]);
           } else if (payload.eventType === 'DELETE') {
@@ -87,16 +107,20 @@ export default function AlbumScreen() {
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('🔌 Memories subscription status:', status);
+      });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      subscription.unsubscribe();
+    };
   }
 
   async function pickImage() {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (permissionResult.granted === false) {
-      Alert.alert('Permission Required', 'Please allow access to your photo library!');
+      showAlert('Permission Required', 'Please allow access to your photo library!');
       return;
     }
 
@@ -114,17 +138,22 @@ export default function AlbumScreen() {
 
   async function addMemory() {
     if (!couple) {
-      Alert.alert('Error', 'No couple found. Please pair with your partner first!');
+      showAlert('Error', 'No couple found. Please pair with your partner first!');
       return;
     }
 
     if (!selectedImage) {
-      Alert.alert('Error', 'Please select an image!');
+      showAlert('Error', 'Please select an image!');
       return;
     }
 
     if (!newMemoryDescription.trim()) {
-      Alert.alert('Error', 'Please add a description!');
+      showAlert('Error', 'Please add a description!');
+      return;
+    }
+
+    if (!user) {
+      showAlert('Error', 'You must be logged in to add memories!');
       return;
     }
 
@@ -146,7 +175,7 @@ export default function AlbumScreen() {
       // In production, you'd upload to Supabase Storage and get a URL
       const { error } = await supabase.from('memories').insert({
         couple_id: couple.id,
-        auth_user_id: userId,
+        auth_user_id: user.id,
         description: newMemoryDescription.trim(),
         image_url: selectedImage, // In production, use the uploaded URL
       });
@@ -159,9 +188,9 @@ export default function AlbumScreen() {
       setNewMemoryDescription('');
       setSelectedImage(null);
       setShowAddModal(false);
-      Alert.alert('Success!', 'Memory added! Your pet gained 5 happiness! 💕');
+      showAlert('Success!', 'Memory added! Your pet gained 5 happiness! 💕');
     } catch (error) {
-      Alert.alert('Error', error.message);
+      showAlert('Error', error.message);
     } finally {
       setUploading(false);
     }
@@ -183,7 +212,7 @@ export default function AlbumScreen() {
               .eq('id', memoryId);
 
             if (error) {
-              Alert.alert('Error', error.message);
+              showAlert('Error', error.message);
             }
           },
         },
@@ -248,11 +277,19 @@ export default function AlbumScreen() {
                 delay={index * 100}
                 style={styles.memoryCard}
               >
-                <Image
-                  source={{ uri: memory.image_url }}
-                  style={styles.memoryImage}
-                  resizeMode="cover"
-                />
+                <TouchableOpacity
+                  onPress={() => {
+                    setViewingImage(memory.image_url);
+                    setShowImageModal(true);
+                  }}
+                  activeOpacity={0.9}
+                >
+                  <Image
+                    source={{ uri: memory.image_url }}
+                    style={styles.memoryImage}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
                 <View style={styles.memoryContent}>
                   <Text style={styles.memoryDescription} numberOfLines={2}>
                     {memory.description}
@@ -261,7 +298,7 @@ export default function AlbumScreen() {
                     <Text style={styles.memoryDate}>
                       {new Date(memory.created_at).toLocaleDateString()}
                     </Text>
-                    {memory.auth_user_id === userId && (
+                    {memory.auth_user_id === user?.id && (
                       <TouchableOpacity onPress={() => deleteMemory(memory.id)}>
                         <Text style={styles.deleteText}>Delete</Text>
                       </TouchableOpacity>
@@ -332,6 +369,45 @@ export default function AlbumScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Full Screen Image Modal */}
+      <Modal visible={showImageModal} animationType="fade" transparent>
+        <View style={styles.fullScreenContainer}>
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => setShowImageModal(false)}
+          >
+            <Text style={styles.closeButtonText}>✕</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.fullScreenTouchable}
+            activeOpacity={1}
+            onPress={() => setShowImageModal(false)}
+          >
+            <Image
+              source={{ uri: viewingImage }}
+              style={styles.fullScreenImage}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
+        </View>
+      </Modal>
+
+      {/* Custom Alert Modal */}
+      <Modal visible={customAlert.visible} transparent animationType="fade">
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertContainer}>
+            <Text style={styles.customAlertTitle}>{customAlert.title}</Text>
+            <Text style={styles.customAlertMessage}>{customAlert.message}</Text>
+            <TouchableOpacity
+              style={styles.customAlertButton}
+              onPress={() => setCustomAlert({ visible: false, title: '', message: '' })}
+            >
+              <Text style={styles.customAlertButtonText}>OK</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -532,5 +608,84 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  fullScreenContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeButton: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    zIndex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    borderRadius: 20,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeButtonText: {
+    fontSize: 24,
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  fullScreenTouchable: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullScreenImage: {
+    width: '100%',
+    height: '100%',
+  },
+  customAlertOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  customAlertContainer: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 25,
+    width: '80%',
+    maxWidth: 400,
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#FF1493',
+  },
+  customAlertTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FF1493',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  customAlertMessage: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  customAlertButton: {
+    backgroundColor: '#FF1493',
+    paddingVertical: 12,
+    paddingHorizontal: 40,
+    borderRadius: 25,
+    shadowColor: '#FF1493',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  customAlertButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });

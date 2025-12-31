@@ -38,7 +38,19 @@
       "Bash(cmd.exe //c \"taskkill /PID 6940 /F\")",
       "Bash(cmd.exe //c \"taskkill /PID 19280 /F\")",
       "WebFetch(domain:avnokifuqpazxcwynjmk.supabase.co)",
-      "Bash(exit)"
+      "Bash(exit)",
+      "Bash(cmd.exe //c \"taskkill /F /IM node.exe\")",
+      "Bash(adb uninstall:*)",
+      "Bash(C:UsersdeanfAppDataLocalAndroidSdkplatform-toolsadb.exe uninstall com.couplespet.app)",
+      "Bash(cmd.exe //c \"C:\\\\Users\\\\deanf\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe uninstall com.couplespet.app\")",
+      "Bash(cmd.exe //c:*)",
+      "Bash(adb devices:*)",
+      "Bash(./gradlew assembleRelease:*)",
+      "Bash(tail:*)",
+      "Bash(node -c:*)",
+      "Bash(rm:*)",
+      "Bash(git rm:*)",
+      "Bash(timeout:*)"
     ]
   }
 }

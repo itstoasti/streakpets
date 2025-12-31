@@ -22,3 +22,6 @@ ios/
 # IDE
 .vscode/
 .idea/
+
+# Windows reserved names
+nul

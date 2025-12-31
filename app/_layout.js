@@ -1,7 +1,14 @@
 import { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, LogBox } from 'react-native';
 import { AuthProvider, useAuth } from '../lib/authContext';
+import { registerForPushNotifications, savePushToken } from '../lib/notificationHelper';
+
+// Ignore AuthSessionMissingError - it's expected when no user is logged in
+LogBox.ignoreLogs([
+  'Auth session missing',
+  'AuthSessionMissingError',
+]);
 
 // Register widgets
 if (typeof require.resolve === 'function') {
@@ -34,8 +41,12 @@ function RootLayoutNav() {
   }, [user, loading, segments]);
 
   useEffect(() => {
-    // Log any unhandled errors
+    // Log any unhandled errors (except expected auth errors)
     const errorHandler = (error) => {
+      // Ignore AuthSessionMissingError - this is expected when user is not logged in
+      if (error?.name === 'AuthSessionMissingError' || error?.message?.includes('Auth session missing')) {
+        return;
+      }
       console.error('App Error:', error);
     };
 
@@ -44,6 +55,20 @@ function RootLayoutNav() {
       ErrorUtils.setGlobalHandler(errorHandler);
     }
   }, []);
+
+  useEffect(() => {
+    // Register for push notifications when user is authenticated
+    async function setupPushNotifications() {
+      if (user?.id) {
+        const token = await registerForPushNotifications();
+        if (token) {
+          await savePushToken(user.id, token);
+        }
+      }
+    }
+
+    setupPushNotifications();
+  }, [user]);
 
   // Show loading screen while checking auth status
   if (loading) {

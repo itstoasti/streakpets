@@ -1,6 +1,6 @@
 import React, { useState, useRef, useImperativeHandle, forwardRef } from 'react';
 import { View, StyleSheet, PanResponder, Dimensions } from 'react-native';
-import { Canvas, Path, Skia, makeImageFromView } from '@shopify/react-native-skia';
+import { Canvas, Path, Skia } from '@shopify/react-native-skia';
 
 const CANVAS_SIZE = Math.min(Dimensions.get('window').width, Dimensions.get('window').height) - 40;
 
@@ -12,7 +12,6 @@ export const SkiaDrawingCanvas = forwardRef(({
 }, ref) => {
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState(null);
-  const canvasRef = useRef(null);
   const currentPathRef = useRef(null);
 
   // Use refs to capture current prop values for use in PanResponder
@@ -95,17 +94,79 @@ export const SkiaDrawingCanvas = forwardRef(({
 
   const exportAsImage = async () => {
     try {
-      if (canvasRef.current) {
-        const image = await makeImageFromView(canvasRef);
-        return {
-          base64: image?.encodeToBase64(),
-          width: CANVAS_SIZE,
-          height: CANVAS_SIZE
-        };
+      console.log('🎨 Exporting image with', paths.length, 'paths');
+
+      if (paths.length === 0) {
+        console.warn('⚠️ No paths to export!');
       }
-      return null;
+
+      // Create a Picture to record drawing commands
+      const recorder = Skia.PictureRecorder();
+      const canvas = recorder.beginRecording(
+        Skia.XYWHRect(0, 0, CANVAS_SIZE, CANVAS_SIZE)
+      );
+
+      // Draw background
+      const bgPaint = Skia.Paint();
+      bgPaint.setColor(Skia.Color(backgroundColor));
+      canvas.drawPaint(bgPaint);
+
+      // Draw all paths by recreating them from SVG
+      paths.forEach((p, index) => {
+        try {
+          // Get the SVG path string
+          const svgString = p.path.toSVGString();
+          console.log(`Path ${index} SVG:`, svgString?.substring(0, 50));
+
+          // Create a new path from the SVG string
+          const newPath = Skia.Path.MakeFromSVGString(svgString);
+
+          if (newPath) {
+            const pathPaint = Skia.Paint();
+            pathPaint.setColor(Skia.Color(p.color));
+            pathPaint.setStyle(1); // Stroke
+            pathPaint.setStrokeWidth(p.width);
+            pathPaint.setStrokeCap(1); // Round
+            pathPaint.setStrokeJoin(1); // Round
+            pathPaint.setAntiAlias(true);
+            canvas.drawPath(newPath, pathPaint);
+          }
+        } catch (pathError) {
+          console.error(`Error drawing path ${index}:`, pathError);
+        }
+      });
+
+      // Finish recording
+      const picture = recorder.finishRecordingAsPicture();
+
+      // Create a surface and draw the picture to it
+      const surface = Skia.Surface.Make(CANVAS_SIZE, CANVAS_SIZE);
+      if (!surface) {
+        console.error('Failed to create surface');
+        return null;
+      }
+
+      const surfaceCanvas = surface.getCanvas();
+      surfaceCanvas.drawPicture(picture);
+
+      // Make image snapshot from surface
+      const image = surface.makeImageSnapshot();
+      if (!image) {
+        console.error('Failed to create image from surface');
+        return null;
+      }
+
+      const base64 = image.encodeToBase64();
+      console.log('✅ Image exported, base64 length:', base64?.length);
+
+      return {
+        base64,
+        width: CANVAS_SIZE,
+        height: CANVAS_SIZE
+      };
     } catch (error) {
       console.error('Error exporting image:', error);
+      console.error('Error stack:', error.stack);
       return null;
     }
   };
@@ -120,7 +181,6 @@ export const SkiaDrawingCanvas = forwardRef(({
 
   return (
     <View
-      ref={canvasRef}
       style={[styles.container, { backgroundColor, width: CANVAS_SIZE, height: CANVAS_SIZE }]}
       {...panResponder.panHandlers}
     >
@@ -164,3 +224,5 @@ const styles = StyleSheet.create({
     height: CANVAS_SIZE,
   },
 });
+
+export default SkiaDrawingCanvas;

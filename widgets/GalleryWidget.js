@@ -1,14 +1,26 @@
 import React from 'react';
-import { FlexWidget, TextWidget, ImageWidget } from 'react-native-android-widget';
+
+// Lazy load widget components - they're only used on Android at widget render time
+let FlexWidget, TextWidget, ImageWidget;
+try {
+  const widgets = require('react-native-android-widget');
+  FlexWidget = widgets.FlexWidget;
+  TextWidget = widgets.TextWidget;
+  ImageWidget = widgets.ImageWidget;
+} catch (e) {
+  // Widget components not available
+}
 
 export function GalleryWidget({ drawing }) {
   console.log('GalleryWidget rendering, drawing exists:', !!drawing);
   console.log('Drawing data:', {
+    hasImage: !!drawing?.image,
     hasWidgetFileUri: !!drawing?.widgetFileUri,
     hasFileUri: !!drawing?.fileUri,
     hasPublicUrl: !!drawing?.publicUrl,
     widgetFileUri: drawing?.widgetFileUri,
     fileUri: drawing?.fileUri,
+    publicUrl: drawing?.publicUrl,
   });
 
   if (!drawing) {
@@ -67,6 +79,12 @@ export function GalleryWidget({ drawing }) {
     imageData = drawing.fileUri;
     imageSource = 'fileUri';
     console.log('Using file URI:', imageData);
+  }
+  // 4. Try public URL from Supabase storage
+  else if (drawing.publicUrl) {
+    imageData = drawing.publicUrl;
+    imageSource = 'publicUrl';
+    console.log('Using public URL:', imageData);
   }
 
   if (!imageData) {

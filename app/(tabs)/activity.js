@@ -11,14 +11,19 @@ import {
   Dimensions,
   Image,
   SafeAreaView,
+  InteractionManager,
 } from 'react-native';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
-import { getPetData, savePetData, getCurrency, saveCurrency, getStreakData, saveStreakData } from '../../lib/storage';
+import { useAuth } from '../../lib/authContext';
+import { useIsFocused } from '@react-navigation/native';
+import { getPetData, savePetData, getCurrency, saveCurrency, getStreakData, saveStreakData, getCoupleData } from '../../lib/storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updateGalleryWidget } from '../../lib/widgetHelper';
 import { SkiaDrawingCanvas } from '../components/SkiaDrawingCanvas';
 import { File, Paths } from 'expo-file-system';
+import { getMyPendingTurns, createGame, updateGameState } from '../../lib/gameHelper';
+import { notifyGameStarted } from '../../lib/notificationHelper';
 
 // Custom Slider Component
 function CustomSlider({ value, onValueChange, minimumValue, maximumValue, step, style }) {
@@ -78,8 +83,10 @@ function CustomSlider({ value, onValueChange, minimumValue, maximumValue, step, 
 }
 
 export default function ActivityScreen() {
+  const { user } = useAuth();
+  const userId = user?.id;
+  const isFocused = useIsFocused();
   const [couple, setCouple] = useState(null);
-  const [userId, setUserId] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [showTicTacToe, setShowTicTacToe] = useState(false);
   const [showTrivia, setShowTrivia] = useState(false);
@@ -90,10 +97,194 @@ export default function ActivityScreen() {
   const [showWouldYouRather, setShowWouldYouRather] = useState(false);
   const [showWhosMoreLikely, setShowWhosMoreLikely] = useState(false);
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
+  const [pendingGames, setPendingGames] = useState(new Set());
 
   useEffect(() => {
-    loadCoupleData();
-  }, []);
+    if (isFocused && user) {
+      loadCoupleData();
+    }
+  }, [isFocused, user]);
+
+  useEffect(() => {
+    if (!couple || !userId) return;
+
+    let subscription;
+
+    async function loadPendingTurns() {
+      const pendingTurns = await getMyPendingTurns(couple.id, userId);
+      const gameTypes = new Set(pendingTurns.map(game => game.game_type));
+      setPendingGames(gameTypes);
+
+      // Subscribe to game updates
+      subscription = supabase
+        .channel('activity_games_updates')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'games',
+            filter: `couple_id=eq.${couple.id}`
+          },
+          async () => {
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+          }
+        )
+        .subscribe();
+    }
+
+    loadPendingTurns();
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
+  }, [couple, userId]);
+
+  // Real-time subscription for whiteboard drawings (for widget sync)
+  useEffect(() => {
+    if (!couple || !isSupabaseConfigured()) return;
+
+    let drawingsSubscription;
+
+    async function syncDrawingsFromDatabase() {
+      try {
+        console.log('🔄 Syncing whiteboard drawings from database...');
+
+        // Fetch latest drawings from database
+        const { data: drawings, error } = await supabase
+          .from('whiteboard_drawings')
+          .select('*')
+          .eq('couple_id', couple.id)
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          console.error('Error fetching drawings:', error);
+          return;
+        }
+
+        // Convert to the format expected by the widget
+        const formattedDrawings = drawings.map(drawing => ({
+          id: drawing.id,
+          publicUrl: drawing.image_url,
+          image: null, // Will load from publicUrl
+          canvasWidth: drawing.canvas_width,
+          canvasHeight: drawing.canvas_height,
+          backgroundColor: drawing.background_color || 'white',
+          createdAt: drawing.created_at,
+        }));
+
+        console.log('✅ Synced drawings:', formattedDrawings.length);
+
+        // Update AsyncStorage
+        await AsyncStorage.setItem('whiteboard_drawings', JSON.stringify(formattedDrawings));
+        await AsyncStorage.setItem('savedDrawings', JSON.stringify(formattedDrawings)); // For widget
+
+        // Update the widget
+        await updateGalleryWidget();
+        console.log('📱 Widget updated with synced drawings');
+      } catch (err) {
+        console.error('Error syncing drawings:', err);
+      }
+    }
+
+    // Initial sync
+    syncDrawingsFromDatabase();
+
+    // Subscribe to changes
+    drawingsSubscription = supabase
+      .channel(`whiteboard_drawings_${couple.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Listen for INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'whiteboard_drawings',
+          filter: `couple_id=eq.${couple.id}`,
+        },
+        async (payload) => {
+          console.log('🔔 Whiteboard drawing changed:', payload.eventType);
+          // Sync drawings when any change occurs
+          await syncDrawingsFromDatabase();
+        }
+      )
+      .subscribe((status) => {
+        console.log('🔌 Whiteboard subscription status:', status);
+      });
+
+    return () => {
+      if (drawingsSubscription) {
+        drawingsSubscription.unsubscribe();
+      }
+    };
+  }, [couple]);
+
+  // Real-time subscription for widget drawing selection (sync which drawing is set as widget)
+  useEffect(() => {
+    if (!couple || !isSupabaseConfigured()) return;
+
+    let coupleSubscription;
+
+    async function syncWidgetSelection() {
+      try {
+        // Fetch current widget selection from couples table
+        const { data: coupleData, error } = await supabase
+          .from('couples')
+          .select('widget_drawing_id')
+          .eq('id', couple.id)
+          .single();
+
+        if (error) {
+          console.error('Error fetching widget selection:', error);
+          return;
+        }
+
+        if (coupleData?.widget_drawing_id) {
+          console.log('🔄 Syncing widget selection:', coupleData.widget_drawing_id);
+          await AsyncStorage.setItem('widgetDrawingId', coupleData.widget_drawing_id);
+          await updateGalleryWidget();
+          console.log('📱 Widget selection synced');
+        }
+      } catch (err) {
+        console.error('Error syncing widget selection:', err);
+      }
+    }
+
+    // Initial sync
+    syncWidgetSelection();
+
+    // Subscribe to widget selection changes
+    coupleSubscription = supabase
+      .channel(`couple_widget_${couple.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'couples',
+          filter: `id=eq.${couple.id}`,
+        },
+        async (payload) => {
+          // Check if widget_drawing_id changed
+          if (payload.new?.widget_drawing_id !== payload.old?.widget_drawing_id) {
+            console.log('🔔 Widget selection changed:', payload.new.widget_drawing_id);
+            await syncWidgetSelection();
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log('🔌 Widget selection subscription status:', status);
+      });
+
+    return () => {
+      if (coupleSubscription) {
+        coupleSubscription.unsubscribe();
+      }
+    };
+  }, [couple]);
 
   function showAlert(title, message) {
     setCustomAlert({ visible: true, title, message });
@@ -101,15 +292,9 @@ export default function ActivityScreen() {
 
   async function loadCoupleData() {
     try {
-      // Get authenticated user
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-      if (authError || !user) {
-        console.log('No authenticated user, skipping data load');
+      if (!user) {
         return;
       }
-
-      setUserId(user.id);
 
     if (isSupabaseConfigured()) {
       try {
@@ -117,7 +302,8 @@ export default function ActivityScreen() {
           .from('couples')
           .select('*')
           .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
-          .single();
+          .order('created_at', { ascending: false })
+          .limit(1);
 
         if (error) {
           console.log('Supabase query error (using local mode):', error.message);
@@ -126,8 +312,8 @@ export default function ActivityScreen() {
           if (localCouple) {
             setCouple(localCouple);
           }
-        } else if (coupleData) {
-          setCouple(coupleData);
+        } else if (coupleData && coupleData.length > 0) {
+          setCouple(coupleData[0]);
         }
       } catch (error) {
         console.log('Supabase error (using local mode):', error.message);
@@ -149,7 +335,7 @@ export default function ActivityScreen() {
     }
   }
 
-  async function addHappiness(amount, activity) {
+  async function addHappiness(amount, activity, awardCoins = true) {
     const petData = await getPetData();
     if (!petData) return;
 
@@ -170,15 +356,20 @@ export default function ActivityScreen() {
     const updatedPet = { ...petData, happiness: newHappiness };
     await savePetData(updatedPet);
 
-    // Award coins for playing games
-    const currency = await getCurrency();
-    const newCurrency = currency + 5;
-    await saveCurrency(newCurrency);
+    // Award coins only if specified (for winners)
+    if (awardCoins) {
+      const currency = await getCurrency();
+      const newCurrency = currency + 5;
+      await saveCurrency(newCurrency);
+    }
 
     // Update streak
     await updateStreak();
 
-    showAlert('Success!', `Your pet gained ${amount} happiness from ${activity}! 🎉\n+5 coins earned!`);
+    const message = awardCoins
+      ? `Your pet gained ${amount} happiness from ${activity}! 🎉\n+5 coins earned!`
+      : `Your pet gained ${amount} happiness from ${activity}! 🎉`;
+    showAlert('Success!', message);
   }
 
   async function updateStreak() {
@@ -240,6 +431,15 @@ export default function ActivityScreen() {
 
           <TouchableOpacity
             style={styles.categoryCard}
+            onPress={() => setSelectedCategory('whiteboard')}
+          >
+            <Text style={styles.categoryEmoji}>🎨</Text>
+            <Text style={styles.categoryName}>Whiteboard</Text>
+            <Text style={styles.categoryDescription}>Draw together!</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.categoryCard}
             onPress={() => setSelectedCategory('other')}
           >
             <Text style={styles.categoryEmoji}>✨</Text>
@@ -269,39 +469,79 @@ export default function ActivityScreen() {
             <Text style={styles.title}>Games</Text>
 
             <TouchableOpacity
-              style={styles.gameCard}
+              style={[
+                styles.gameCard,
+                pendingGames.has('tictactoe') && styles.gameCardPending
+              ]}
               onPress={() => setShowTicTacToe(true)}
             >
-              <Text style={styles.gameEmoji}>❌⭕</Text>
-              <Text style={styles.gameName}>Tic Tac Toe</Text>
-              <Text style={styles.gameReward}>+5 Happiness</Text>
+              <View style={styles.gameCardContent}>
+                <Text style={styles.gameEmoji}>❌⭕</Text>
+                <Text style={styles.gameName}>Tic Tac Toe</Text>
+                <Text style={styles.gameReward}>+5 Happiness</Text>
+              </View>
+              {pendingGames.has('tictactoe') && (
+                <View style={styles.yourTurnBadge}>
+                  <Text style={styles.yourTurnText}>Your Turn!</Text>
+                </View>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.gameCard}
+              style={[
+                styles.gameCard,
+                pendingGames.has('dotsandboxes') && styles.gameCardPending
+              ]}
               onPress={() => setShowDotsAndBoxes(true)}
             >
-              <Text style={styles.gameEmoji}>⬛🟦</Text>
-              <Text style={styles.gameName}>Dots and Boxes</Text>
-              <Text style={styles.gameReward}>+5 Happiness</Text>
+              <View style={styles.gameCardContent}>
+                <Text style={styles.gameEmoji}>⬛🟦</Text>
+                <Text style={styles.gameName}>Dots and Boxes</Text>
+                <Text style={styles.gameReward}>+5 Happiness</Text>
+              </View>
+              {pendingGames.has('dotsandboxes') && (
+                <View style={styles.yourTurnBadge}>
+                  <Text style={styles.yourTurnText}>Your Turn!</Text>
+                </View>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.gameCard}
+              style={[
+                styles.gameCard,
+                pendingGames.has('connectfour') && styles.gameCardPending
+              ]}
               onPress={() => setShowConnectFour(true)}
             >
-              <Text style={styles.gameEmoji}>🔴🟡</Text>
-              <Text style={styles.gameName}>Connect Four</Text>
-              <Text style={styles.gameReward}>+5 Happiness</Text>
+              <View style={styles.gameCardContent}>
+                <Text style={styles.gameEmoji}>🔴🟡</Text>
+                <Text style={styles.gameName}>Connect Four</Text>
+                <Text style={styles.gameReward}>+5 Happiness</Text>
+              </View>
+              {pendingGames.has('connectfour') && (
+                <View style={styles.yourTurnBadge}>
+                  <Text style={styles.yourTurnText}>Your Turn!</Text>
+                </View>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.gameCard}
+              style={[
+                styles.gameCard,
+                pendingGames.has('reversi') && styles.gameCardPending
+              ]}
               onPress={() => setShowReversi(true)}
             >
-              <Text style={styles.gameEmoji}>⚫⚪</Text>
-              <Text style={styles.gameName}>Reversi</Text>
-              <Text style={styles.gameReward}>+5 Happiness</Text>
+              <View style={styles.gameCardContent}>
+                <Text style={styles.gameEmoji}>⚫⚪</Text>
+                <Text style={styles.gameName}>Reversi</Text>
+                <Text style={styles.gameReward}>+5 Happiness</Text>
+              </View>
+              {pendingGames.has('reversi') && (
+                <View style={styles.yourTurnBadge}>
+                  <Text style={styles.yourTurnText}>Your Turn!</Text>
+                </View>
+              )}
             </TouchableOpacity>
           </>
         )}
@@ -339,9 +579,9 @@ export default function ActivityScreen() {
           </>
         )}
 
-        {selectedCategory === 'other' && (
+        {selectedCategory === 'whiteboard' && (
           <>
-            <Text style={styles.title}>Other Activities</Text>
+            <Text style={styles.title}>Whiteboard</Text>
 
             <TouchableOpacity
               style={styles.gameCard}
@@ -353,15 +593,41 @@ export default function ActivityScreen() {
             </TouchableOpacity>
           </>
         )}
+
+        {selectedCategory === 'other' && (
+          <>
+            <Text style={styles.title}>Other Activities</Text>
+
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyEmoji}>✨</Text>
+              <Text style={styles.emptyText}>More activities coming soon!</Text>
+            </View>
+          </>
+        )}
       </ScrollView>
 
       {/* Tic Tac Toe Modal */}
       <Modal visible={showTicTacToe} animationType="slide" transparent>
         <TicTacToeGame
+          couple={couple}
+          userId={userId}
           onClose={() => setShowTicTacToe(false)}
-          onComplete={() => {
-            setShowTicTacToe(false);
-            addHappiness(5, 'playing Tic Tac Toe');
+          onTurnComplete={async () => {
+            // Refresh pending turns badge immediately after each move
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+          }}
+          onComplete={async (isWinner) => {
+            // Refresh pending turns to update badge
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+
+            setTimeout(() => {
+              setShowTicTacToe(false);
+              addHappiness(5, 'playing Tic Tac Toe', isWinner);
+            }, 100);
           }}
         />
       </Modal>
@@ -371,8 +637,10 @@ export default function ActivityScreen() {
         <TriviaGame
           onClose={() => setShowTrivia(false)}
           onComplete={() => {
-            setShowTrivia(false);
-            addHappiness(5, 'playing Couple Trivia');
+            setTimeout(() => {
+              setShowTrivia(false);
+              addHappiness(5, 'playing Couple Trivia');
+            }, 100);
           }}
         />
       </Modal>
@@ -380,10 +648,25 @@ export default function ActivityScreen() {
       {/* Dots and Boxes Modal */}
       <Modal visible={showDotsAndBoxes} animationType="slide" transparent>
         <DotsAndBoxesGame
+          couple={couple}
+          userId={userId}
           onClose={() => setShowDotsAndBoxes(false)}
-          onComplete={() => {
-            setShowDotsAndBoxes(false);
-            addHappiness(5, 'playing Dots and Boxes');
+          onTurnComplete={async () => {
+            // Refresh pending turns badge immediately after each move
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+          }}
+          onComplete={async (isWinner) => {
+            // Refresh pending turns to update badge
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+
+            setTimeout(() => {
+              setShowDotsAndBoxes(false);
+              addHappiness(5, 'playing Dots and Boxes', isWinner);
+            }, 100);
           }}
         />
       </Modal>
@@ -391,10 +674,14 @@ export default function ActivityScreen() {
       {/* Whiteboard Modal */}
       <Modal visible={showWhiteboard} animationType="slide">
         <WhiteboardGame
+          couple={couple}
+          userId={userId}
           onClose={() => setShowWhiteboard(false)}
           onComplete={() => {
-            setShowWhiteboard(false);
-            addHappiness(3, 'using the Whiteboard');
+            setTimeout(() => {
+              setShowWhiteboard(false);
+              addHappiness(3, 'using the Whiteboard');
+            }, 100);
           }}
         />
       </Modal>
@@ -402,10 +689,25 @@ export default function ActivityScreen() {
       {/* Connect Four Modal */}
       <Modal visible={showConnectFour} animationType="slide" transparent>
         <ConnectFourGame
+          couple={couple}
+          userId={userId}
           onClose={() => setShowConnectFour(false)}
-          onComplete={() => {
-            setShowConnectFour(false);
-            addHappiness(5, 'playing Connect Four');
+          onTurnComplete={async () => {
+            // Refresh pending turns badge immediately after each move
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+          }}
+          onComplete={async (isWinner) => {
+            // Refresh pending turns to update badge
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+
+            setTimeout(() => {
+              setShowConnectFour(false);
+              addHappiness(5, 'playing Connect Four', isWinner);
+            }, 100);
           }}
         />
       </Modal>
@@ -413,10 +715,25 @@ export default function ActivityScreen() {
       {/* Reversi Modal */}
       <Modal visible={showReversi} animationType="slide" transparent>
         <ReversiGame
+          couple={couple}
+          userId={userId}
           onClose={() => setShowReversi(false)}
-          onComplete={() => {
-            setShowReversi(false);
-            addHappiness(5, 'playing Reversi');
+          onTurnComplete={async () => {
+            // Refresh pending turns badge immediately after each move
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+          }}
+          onComplete={async (isWinner) => {
+            // Refresh pending turns to update badge
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+
+            setTimeout(() => {
+              setShowReversi(false);
+              addHappiness(5, 'playing Reversi', isWinner);
+            }, 100);
           }}
         />
       </Modal>
@@ -426,8 +743,10 @@ export default function ActivityScreen() {
         <WouldYouRatherGame
           onClose={() => setShowWouldYouRather(false)}
           onComplete={() => {
-            setShowWouldYouRather(false);
-            addHappiness(5, 'playing Would You Rather');
+            setTimeout(() => {
+              setShowWouldYouRather(false);
+              addHappiness(5, 'playing Would You Rather');
+            }, 100);
           }}
         />
       </Modal>
@@ -437,8 +756,10 @@ export default function ActivityScreen() {
         <WhosMoreLikelyGame
           onClose={() => setShowWhosMoreLikely(false)}
           onComplete={() => {
-            setShowWhosMoreLikely(false);
-            addHappiness(5, "playing Who's More Likely To");
+            setTimeout(() => {
+              setShowWhosMoreLikely(false);
+              addHappiness(5, "playing Who's More Likely To");
+            }, 100);
           }}
         />
       </Modal>
@@ -462,23 +783,140 @@ export default function ActivityScreen() {
   );
 }
 
-function TicTacToeGame({ onClose, onComplete }) {
+export function TicTacToeGame({ couple, userId, onClose, onTurnComplete, onComplete }) {
   const [board, setBoard] = useState(Array(9).fill(null));
-  const [isXNext, setIsXNext] = useState(true);
+  const [currentTurn, setCurrentTurn] = useState('player1');
   const [winner, setWinner] = useState(null);
+  const [myPlayer, setMyPlayer] = useState(null);
+  const [gameId, setGameId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [partnerName, setPartnerName] = useState('Partner');
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
 
-  function handlePress(index) {
+  useEffect(() => {
+    initGame();
+  }, []);
+
+  async function initGame() {
+    if (!couple || !userId) {
+      setLoading(false);
+      return;
+    }
+
+    // Determine which player this user is
+    const playerNum = couple.auth_user1_id === userId ? 'player1' : 'player2';
+    setMyPlayer(playerNum);
+    setPartnerName(playerNum === 'player1' ? 'Player 2' : 'Player 1');
+
+    // Check if there's an active game
+    const { data: existingGame } = await supabase
+      .from('games')
+      .select('*')
+      .eq('couple_id', couple.id)
+      .eq('game_type', 'tictactoe')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingGame) {
+      // Load existing game
+      setGameId(existingGame.id);
+      setBoard(existingGame.game_state.board);
+      setCurrentTurn(existingGame.current_turn);
+
+      // Defer winner update to avoid accessibility state errors
+      InteractionManager.runAfterInteractions(() => {
+        setWinner(existingGame.winner);
+      });
+    } else {
+      // Create new game - whoever starts gets the first turn
+      const newGame = await createGame(
+        couple.id,
+        'tictactoe',
+        { board: Array(9).fill(null) },
+        userId
+      );
+
+      if (newGame) {
+        setGameId(newGame.id);
+        setCurrentTurn(newGame.current_turn);
+      }
+    }
+
+    setLoading(false);
+  }
+
+  // Real-time subscription
+  useEffect(() => {
+    if (!gameId) return;
+
+    let isMounted = true;
+
+    // Poll for updates every 2 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from('games')
+          .select('*')
+          .eq('id', gameId)
+          .single();
+
+        if (data && isMounted) {
+          setBoard(data.game_state.board);
+          setCurrentTurn(data.current_turn);
+
+          // Defer winner update to avoid accessibility state errors
+          InteractionManager.runAfterInteractions(() => {
+            setWinner(data.winner);
+          });
+        }
+      } catch (error) {
+        // Ignore errors during polling (component might be unmounting)
+      }
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [gameId]);
+
+  function showAlert(title, message) {
+    setCustomAlert({ visible: true, title, message });
+  }
+
+  async function handlePress(index) {
+    // Check if it's this player's turn
+    if (currentTurn !== myPlayer) {
+      showAlert('Not Your Turn', "Wait for your partner's move! 💕");
+      return;
+    }
+
     if (board[index] || winner) return;
 
     const newBoard = [...board];
-    newBoard[index] = isXNext ? 'X' : 'O';
-    setBoard(newBoard);
-    setIsXNext(!isXNext);
+    const symbol = myPlayer === 'player1' ? 'X' : 'O';
+    newBoard[index] = symbol;
 
     const gameWinner = calculateWinner(newBoard);
-    if (gameWinner) {
-      setWinner(gameWinner);
+    const nextTurn = myPlayer === 'player1' ? 'player2' : 'player1';
+
+    // Update in Supabase with notification
+    await updateGameState(
+      gameId,
+      { board: newBoard },
+      nextTurn,
+      gameWinner,
+      userId
+    );
+
+    // Refresh badge immediately
+    if (onTurnComplete) {
+      await onTurnComplete();
     }
+
+    // Local state will be updated via real-time subscription
   }
 
   function calculateWinner(squares) {
@@ -502,23 +940,51 @@ function TicTacToeGame({ onClose, onComplete }) {
     return null;
   }
 
-  function reset() {
-    setBoard(Array(9).fill(null));
-    setIsXNext(true);
-    setWinner(null);
+  async function reset() {
+    if (!gameId) return;
+
+    // Reset the game state
+    await supabase
+      .from('games')
+      .update({
+        game_state: { board: Array(9).fill(null) },
+        current_turn: 'player1',
+        winner: null,
+        is_active: true,
+      })
+      .eq('id', gameId);
   }
+
+  if (loading) {
+    return (
+      <View style={styles.modalContainer}>
+        <View style={styles.gameModalContent}>
+          <Text style={styles.gameModalTitle}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const mySymbol = myPlayer === 'player1' ? 'X' : 'O';
+  const isMyTurn = currentTurn === myPlayer;
 
   return (
     <View style={styles.modalContainer}>
       <View style={styles.gameModalContent}>
         <Text style={styles.gameModalTitle}>Tic Tac Toe</Text>
 
-        <Text style={styles.turnText}>
+        <Text style={styles.playerInfoText}>
+          You are: {mySymbol} | Partner: {partnerName}
+        </Text>
+
+        <Text style={[styles.turnText, isMyTurn && styles.myTurnText]}>
           {winner
             ? winner === 'Draw'
               ? "It's a Draw!"
               : `${winner} Wins!`
-            : `${isXNext ? 'X' : 'O'}'s Turn`}
+            : isMyTurn
+            ? "Your Turn!"
+            : `${partnerName}'s Turn`}
         </Text>
 
         <View style={styles.board}>
@@ -527,6 +993,7 @@ function TicTacToeGame({ onClose, onComplete }) {
               key={index}
               style={styles.cell}
               onPress={() => handlePress(index)}
+              activeOpacity={!isMyTurn || winner ? 1 : 0.7}
             >
               <Text style={styles.cellText}>{cell}</Text>
             </TouchableOpacity>
@@ -535,13 +1002,13 @@ function TicTacToeGame({ onClose, onComplete }) {
 
         <View style={styles.gameButtons}>
           <TouchableOpacity style={styles.gameButton} onPress={reset}>
-            <Text style={styles.gameButtonText}>Reset</Text>
+            <Text style={styles.gameButtonText}>New Game</Text>
           </TouchableOpacity>
 
           {winner && (
             <TouchableOpacity
               style={[styles.gameButton, styles.completeButton]}
-              onPress={onComplete}
+              onPress={() => onComplete(winner !== 'Draw' && winner === mySymbol)}
             >
               <Text style={styles.gameButtonText}>Complete</Text>
             </TouchableOpacity>
@@ -555,6 +1022,22 @@ function TicTacToeGame({ onClose, onComplete }) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Custom Alert Modal */}
+      <Modal visible={customAlert.visible} transparent animationType="fade">
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertContainer}>
+            <Text style={styles.customAlertTitle}>{customAlert.title}</Text>
+            <Text style={styles.customAlertMessage}>{customAlert.message}</Text>
+            <TouchableOpacity
+              style={styles.customAlertButton}
+              onPress={() => setCustomAlert({ visible: false, title: '', message: '' })}
+            >
+              <Text style={styles.customAlertButtonText}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -656,7 +1139,7 @@ function TriviaGame({ onClose, onComplete }) {
   );
 }
 
-function DotsAndBoxesGame({ onClose, onComplete }) {
+export function DotsAndBoxesGame({ couple, userId, onClose, onTurnComplete, onComplete }) {
   const gridSize = 4; // 4x4 dots = 3x3 boxes
   const [horizontalLines, setHorizontalLines] = useState(
     Array(gridSize).fill(null).map(() => Array(gridSize - 1).fill(false))
@@ -667,49 +1150,214 @@ function DotsAndBoxesGame({ onClose, onComplete }) {
   const [boxes, setBoxes] = useState(
     Array(gridSize - 1).fill(null).map(() => Array(gridSize - 1).fill(null))
   );
-  const [currentPlayer, setCurrentPlayer] = useState(1); // 1 or 2
+  const [currentTurn, setCurrentTurn] = useState('player1');
   const [scores, setScores] = useState({ player1: 0, player2: 0 });
   const [gameOver, setGameOver] = useState(false);
+  const [myPlayer, setMyPlayer] = useState(null);
+  const [gameId, setGameId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [partnerName, setPartnerName] = useState('Partner');
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
 
-  function handleHorizontalLine(row, col) {
+  useEffect(() => {
+    initGame();
+  }, []);
+
+  function showAlert(title, message) {
+    setCustomAlert({ visible: true, title, message });
+  }
+
+  async function initGame() {
+    if (!couple || !userId) {
+      setLoading(false);
+      return;
+    }
+
+    const playerNum = couple.auth_user1_id === userId ? 'player1' : 'player2';
+    setMyPlayer(playerNum);
+    setPartnerName(playerNum === 'player1' ? 'Player 2' : 'Player 1');
+
+    const { data: existingGame } = await supabase
+      .from('games')
+      .select('*')
+      .eq('couple_id', couple.id)
+      .eq('game_type', 'dotsandboxes')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingGame) {
+      setGameId(existingGame.id);
+      setHorizontalLines(existingGame.game_state.horizontalLines);
+      setVerticalLines(existingGame.game_state.verticalLines);
+      setBoxes(existingGame.game_state.boxes);
+      setCurrentTurn(existingGame.current_turn);
+      setScores(existingGame.game_state.scores);
+      setGameOver(existingGame.winner !== null);
+    } else {
+      const initialState = {
+        horizontalLines: Array(gridSize).fill(null).map(() => Array(gridSize - 1).fill(false)),
+        verticalLines: Array(gridSize - 1).fill(null).map(() => Array(gridSize).fill(false)),
+        boxes: Array(gridSize - 1).fill(null).map(() => Array(gridSize - 1).fill(null)),
+        scores: { player1: 0, player2: 0 }
+      };
+
+      const { data: newGame } = await supabase
+        .from('games')
+        .insert({
+          couple_id: couple.id,
+          game_type: 'dotsandboxes',
+          game_state: initialState,
+          current_turn: playerNum,
+          is_active: true,
+        })
+        .select()
+        .single();
+
+      if (newGame) {
+        setGameId(newGame.id);
+      }
+    }
+
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (!gameId) return;
+
+    let isMounted = true;
+
+    // Poll for updates every 2 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from('games')
+          .select('*')
+          .eq('id', gameId)
+          .single();
+
+        if (data && isMounted) {
+          setHorizontalLines(data.game_state.horizontalLines);
+          setVerticalLines(data.game_state.verticalLines);
+          setBoxes(data.game_state.boxes);
+          setCurrentTurn(data.current_turn);
+          setScores(data.game_state.scores);
+
+          // Defer game over update to avoid accessibility state errors
+          InteractionManager.runAfterInteractions(() => {
+            setGameOver(data.winner !== null);
+          });
+        }
+      } catch (error) {
+        // Ignore errors during polling (component might be unmounting)
+      }
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [gameId]);
+
+  async function handleHorizontalLine(row, col) {
+    if (currentTurn !== myPlayer) {
+      showAlert('Not Your Turn', "Wait for your partner's move! 💕");
+      return;
+    }
+
     if (horizontalLines[row][col] || gameOver) return;
 
     const newHorizontal = horizontalLines.map(r => [...r]);
     newHorizontal[row][col] = true;
-    setHorizontalLines(newHorizontal);
 
-    const boxesCompleted = checkBoxesCompleted(newHorizontal, verticalLines, row, col, 'horizontal');
+    const result = checkBoxesCompleted(newHorizontal, verticalLines, boxes, scores, row, col, 'horizontal');
 
-    if (boxesCompleted === 0) {
-      setCurrentPlayer(currentPlayer === 1 ? 2 : 1);
+    const nextTurn = result.boxesCompleted === 0 ? (currentTurn === 'player1' ? 'player2' : 'player1') : currentTurn;
+
+    const updates = {
+      game_state: {
+        horizontalLines: newHorizontal,
+        verticalLines: verticalLines,
+        boxes: result.newBoxes,
+        scores: result.newScores
+      },
+      current_turn: nextTurn,
+    };
+
+    if (result.isGameOver) {
+      const winner = result.newScores.player1 > result.newScores.player2 ? 'Player 1' :
+                     result.newScores.player2 > result.newScores.player1 ? 'Player 2' : 'Draw';
+      updates.winner = winner;
+      updates.is_active = false;
+    }
+
+    await supabase
+      .from('games')
+      .update(updates)
+      .eq('id', gameId);
+
+    // Refresh badge immediately
+    if (onTurnComplete) {
+      await onTurnComplete();
     }
   }
 
-  function handleVerticalLine(row, col) {
+  async function handleVerticalLine(row, col) {
+    if (currentTurn !== myPlayer) {
+      showAlert('Not Your Turn', "Wait for your partner's move! 💕");
+      return;
+    }
+
     if (verticalLines[row][col] || gameOver) return;
 
     const newVertical = verticalLines.map(r => [...r]);
     newVertical[row][col] = true;
-    setVerticalLines(newVertical);
 
-    const boxesCompleted = checkBoxesCompleted(horizontalLines, newVertical, row, col, 'vertical');
+    const result = checkBoxesCompleted(horizontalLines, newVertical, boxes, scores, row, col, 'vertical');
 
-    if (boxesCompleted === 0) {
-      setCurrentPlayer(currentPlayer === 1 ? 2 : 1);
+    const nextTurn = result.boxesCompleted === 0 ? (currentTurn === 'player1' ? 'player2' : 'player1') : currentTurn;
+
+    const updates = {
+      game_state: {
+        horizontalLines: horizontalLines,
+        verticalLines: newVertical,
+        boxes: result.newBoxes,
+        scores: result.newScores
+      },
+      current_turn: nextTurn,
+    };
+
+    if (result.isGameOver) {
+      const winner = result.newScores.player1 > result.newScores.player2 ? 'Player 1' :
+                     result.newScores.player2 > result.newScores.player1 ? 'Player 2' : 'Draw';
+      updates.winner = winner;
+      updates.is_active = false;
+    }
+
+    await supabase
+      .from('games')
+      .update(updates)
+      .eq('id', gameId);
+
+    // Refresh badge immediately
+    if (onTurnComplete) {
+      await onTurnComplete();
     }
   }
 
-  function checkBoxesCompleted(hLines, vLines, row, col, type) {
-    const newBoxes = boxes.map(r => [...r]);
+  function checkBoxesCompleted(hLines, vLines, currentBoxes, currentScores, row, col, type) {
+    const newBoxes = currentBoxes.map(r => [...r]);
     let completed = 0;
+    const playerNum = currentTurn === 'player1' ? 1 : 2;
 
     if (type === 'horizontal') {
       // Check box above
       if (row > 0) {
         const boxRow = row - 1;
         const boxCol = col;
-        if (!boxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
-          newBoxes[boxRow][boxCol] = currentPlayer;
+        if (!currentBoxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
+          newBoxes[boxRow][boxCol] = playerNum;
           completed++;
         }
       }
@@ -717,8 +1365,8 @@ function DotsAndBoxesGame({ onClose, onComplete }) {
       if (row < gridSize - 1) {
         const boxRow = row;
         const boxCol = col;
-        if (!boxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
-          newBoxes[boxRow][boxCol] = currentPlayer;
+        if (!currentBoxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
+          newBoxes[boxRow][boxCol] = playerNum;
           completed++;
         }
       }
@@ -727,8 +1375,8 @@ function DotsAndBoxesGame({ onClose, onComplete }) {
       if (col > 0) {
         const boxRow = row;
         const boxCol = col - 1;
-        if (!boxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
-          newBoxes[boxRow][boxCol] = currentPlayer;
+        if (!currentBoxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
+          newBoxes[boxRow][boxCol] = playerNum;
           completed++;
         }
       }
@@ -736,23 +1384,44 @@ function DotsAndBoxesGame({ onClose, onComplete }) {
       if (col < gridSize - 1) {
         const boxRow = row;
         const boxCol = col;
-        if (!boxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
-          newBoxes[boxRow][boxCol] = currentPlayer;
+        if (!currentBoxes[boxRow][boxCol] && isBoxComplete(hLines, vLines, boxRow, boxCol)) {
+          newBoxes[boxRow][boxCol] = playerNum;
           completed++;
         }
       }
     }
 
+    const newScores = { ...currentScores };
     if (completed > 0) {
-      setBoxes(newBoxes);
-      const newScores = { ...scores };
-      newScores[`player${currentPlayer}`] += completed;
-      setScores(newScores);
+      newScores[currentTurn] += completed;
+    }
+
+    // Check if game is over
+    const isGameOver = newBoxes.every(row => row.every(box => box !== null));
+
+    return {
+      newBoxes,
+      newScores,
+      boxesCompleted: completed,
+      isGameOver
+    };
+  }
+
+  // Old version for backward compatibility - remove after refactor
+  function checkBoxesCompletedOld(hLines, vLines, row, col, type) {
+    const result = checkBoxesCompleted(hLines, vLines, boxes, scores, row, col, type);
+
+    if (result.boxesCompleted > 0) {
+      setBoxes(result.newBoxes);
+      setScores(result.newScores);
 
       // Check if game is over
       const totalBoxes = (gridSize - 1) * (gridSize - 1);
       if (newScores.player1 + newScores.player2 === totalBoxes) {
-        setGameOver(true);
+        // Defer game over update to avoid accessibility state errors
+        InteractionManager.runAfterInteractions(() => {
+          setGameOver(true);
+        });
       }
     }
 
@@ -768,30 +1437,62 @@ function DotsAndBoxesGame({ onClose, onComplete }) {
     );
   }
 
-  function reset() {
-    setHorizontalLines(Array(gridSize).fill(null).map(() => Array(gridSize - 1).fill(false)));
-    setVerticalLines(Array(gridSize - 1).fill(null).map(() => Array(gridSize).fill(false)));
-    setBoxes(Array(gridSize - 1).fill(null).map(() => Array(gridSize - 1).fill(null)));
-    setCurrentPlayer(1);
-    setScores({ player1: 0, player2: 0 });
-    setGameOver(false);
+  async function reset() {
+    if (!gameId) return;
+
+    const initialState = {
+      horizontalLines: Array(gridSize).fill(null).map(() => Array(gridSize - 1).fill(false)),
+      verticalLines: Array(gridSize - 1).fill(null).map(() => Array(gridSize).fill(false)),
+      boxes: Array(gridSize - 1).fill(null).map(() => Array(gridSize - 1).fill(null)),
+      scores: { player1: 0, player2: 0 }
+    };
+
+    await supabase
+      .from('games')
+      .update({
+        game_state: initialState,
+        current_turn: 'player1',
+        winner: null,
+        is_active: true,
+      })
+      .eq('id', gameId);
   }
+
+  if (loading) {
+    return (
+      <View style={styles.modalContainer}>
+        <View style={styles.gameModalContent}>
+          <Text style={styles.gameModalTitle}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const isMyTurn = currentTurn === myPlayer;
 
   return (
     <View style={styles.modalContainer}>
       <View style={styles.gameModalContent}>
         <Text style={styles.gameModalTitle}>Dots and Boxes</Text>
 
+        <Text style={styles.playerInfoText}>
+          You are: {myPlayer === 'player1' ? '🟦 Player 1' : '🟥 Player 2'} | Partner: {partnerName}
+        </Text>
+
         <View style={styles.dotsHeader}>
-          <Text style={[styles.dotsPlayer, currentPlayer === 1 && styles.dotsPlayerActive]}>
+          <Text style={[styles.dotsPlayer, currentTurn === 'player1' && styles.dotsPlayerActive]}>
             🟦 P1: {scores.player1}
           </Text>
-          <Text style={[styles.dotsPlayer, currentPlayer === 2 && styles.dotsPlayerActive]}>
+          <Text style={[styles.dotsPlayer, currentTurn === 'player2' && styles.dotsPlayerActive]}>
             🟥 P2: {scores.player2}
           </Text>
         </View>
 
-        {gameOver && (
+        {!gameOver ? (
+          <Text style={[styles.turnText, isMyTurn && styles.myTurnText]}>
+            {isMyTurn ? 'Your Turn!' : `${partnerName}'s Turn`}
+          </Text>
+        ) : (
           <Text style={styles.dotsWinner}>
             {scores.player1 > scores.player2
               ? '🟦 Player 1 Wins!'
@@ -869,7 +1570,11 @@ function DotsAndBoxesGame({ onClose, onComplete }) {
           {gameOver && (
             <TouchableOpacity
               style={[styles.gameButton, styles.completeButton]}
-              onPress={onComplete}
+              onPress={() => {
+                const isWinner = (myPlayer === 'player1' && scores.player1 > scores.player2) ||
+                                 (myPlayer === 'player2' && scores.player2 > scores.player1);
+                onComplete(isWinner);
+              }}
             >
               <Text style={styles.gameButtonText}>Complete</Text>
             </TouchableOpacity>
@@ -883,19 +1588,135 @@ function DotsAndBoxesGame({ onClose, onComplete }) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Custom Alert Modal */}
+      <Modal visible={customAlert.visible} transparent animationType="fade">
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertContainer}>
+            <Text style={styles.customAlertTitle}>{customAlert.title}</Text>
+            <Text style={styles.customAlertMessage}>{customAlert.message}</Text>
+            <TouchableOpacity
+              style={styles.customAlertButton}
+              onPress={() => setCustomAlert({ visible: false, title: '', message: '' })}
+            >
+              <Text style={styles.customAlertButtonText}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
-function ConnectFourGame({ onClose, onComplete }) {
+export function ConnectFourGame({ couple, userId, onClose, onTurnComplete, onComplete }) {
   const ROWS = 6;
   const COLS = 7;
   const [board, setBoard] = useState(Array(ROWS).fill(null).map(() => Array(COLS).fill(null)));
-  const [currentPlayer, setCurrentPlayer] = useState(1); // 1 = Red, 2 = Yellow
+  const [currentTurn, setCurrentTurn] = useState('player1');
   const [winner, setWinner] = useState(null);
   const [winningCells, setWinningCells] = useState([]);
+  const [myPlayer, setMyPlayer] = useState(null);
+  const [gameId, setGameId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [partnerName, setPartnerName] = useState('Partner');
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
 
-  function dropPiece(col) {
+  useEffect(() => {
+    initGame();
+  }, []);
+
+  function showAlert(title, message) {
+    setCustomAlert({ visible: true, title, message });
+  }
+
+  async function initGame() {
+    if (!couple || !userId) {
+      setLoading(false);
+      return;
+    }
+
+    const playerNum = couple.auth_user1_id === userId ? 'player1' : 'player2';
+    setMyPlayer(playerNum);
+    setPartnerName(playerNum === 'player1' ? 'Player 2' : 'Player 1');
+
+    const { data: existingGame } = await supabase
+      .from('games')
+      .select('*')
+      .eq('couple_id', couple.id)
+      .eq('game_type', 'connectfour')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingGame) {
+      setGameId(existingGame.id);
+      setBoard(existingGame.game_state.board);
+      setCurrentTurn(existingGame.current_turn);
+      setWinningCells(existingGame.game_state.winningCells || []);
+
+      // Defer winner update to avoid accessibility state errors
+      InteractionManager.runAfterInteractions(() => {
+        setWinner(existingGame.winner);
+      });
+    } else {
+      const newGame = await createGame(
+        couple.id,
+        'connectfour',
+        { board: Array(ROWS).fill(null).map(() => Array(COLS).fill(null)), winningCells: [] },
+        userId
+      );
+
+      if (newGame) {
+        setGameId(newGame.id);
+        setCurrentTurn(newGame.current_turn);
+      }
+    }
+
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (!gameId) return;
+
+    let isMounted = true;
+
+    // Poll for updates every 2 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from('games')
+          .select('*')
+          .eq('id', gameId)
+          .single();
+
+        if (data && isMounted) {
+          setBoard(data.game_state.board);
+          setCurrentTurn(data.current_turn);
+          setWinningCells(data.game_state.winningCells || []);
+
+          // Defer winner update to avoid accessibility state errors
+          InteractionManager.runAfterInteractions(() => {
+            setWinner(data.winner);
+          });
+        }
+      } catch (error) {
+        // Ignore errors during polling (component might be unmounting)
+      }
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [gameId]);
+
+  async function dropPiece(col) {
+    if (currentTurn !== myPlayer) {
+      showAlert('Not Your Turn', "Wait for your partner's move! 💕");
+      return;
+    }
+
     if (winner) return;
 
     // Find the lowest empty row in this column
@@ -909,20 +1730,33 @@ function ConnectFourGame({ onClose, onComplete }) {
 
     if (row === -1) return; // Column is full
 
-    // Place the piece
+    // Place the piece (player1 = 1, player2 = 2)
+    const playerNumber = myPlayer === 'player1' ? 1 : 2;
     const newBoard = board.map(r => [...r]);
-    newBoard[row][col] = currentPlayer;
-    setBoard(newBoard);
+    newBoard[row][col] = playerNumber;
 
     // Check for winner
-    const winResult = checkWinner(newBoard, row, col, currentPlayer);
+    const winResult = checkWinner(newBoard, row, col, playerNumber);
+    const nextTurn = myPlayer === 'player1' ? 'player2' : 'player1';
+
+    let gameWinner = null;
     if (winResult) {
-      setWinner(currentPlayer);
-      setWinningCells(winResult);
+      gameWinner = playerNumber === 1 ? '🔴 Red' : '🟡 Yellow';
     } else if (isBoardFull(newBoard)) {
-      setWinner('draw');
-    } else {
-      setCurrentPlayer(currentPlayer === 1 ? 2 : 1);
+      gameWinner = 'draw';
+    }
+
+    await updateGameState(
+      gameId,
+      { board: newBoard, winningCells: winResult || [] },
+      nextTurn,
+      gameWinner,
+      userId
+    );
+
+    // Refresh badge immediately
+    if (onTurnComplete) {
+      await onTurnComplete();
     }
   }
 
@@ -978,28 +1812,54 @@ function ConnectFourGame({ onClose, onComplete }) {
     return board.every(row => row.every(cell => cell !== null));
   }
 
-  function reset() {
-    setBoard(Array(ROWS).fill(null).map(() => Array(COLS).fill(null)));
-    setCurrentPlayer(1);
-    setWinner(null);
-    setWinningCells([]);
+  async function reset() {
+    if (!gameId) return;
+
+    await supabase
+      .from('games')
+      .update({
+        game_state: { board: Array(ROWS).fill(null).map(() => Array(COLS).fill(null)), winningCells: [] },
+        current_turn: 'player1',
+        winner: null,
+        is_active: true,
+      })
+      .eq('id', gameId);
   }
 
   function isWinningCell(row, col) {
     return winningCells.some(([r, c]) => r === row && c === col);
   }
 
+  if (loading) {
+    return (
+      <View style={styles.modalContainer}>
+        <View style={styles.gameModalContent}>
+          <Text style={styles.gameModalTitle}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const myColor = myPlayer === 'player1' ? '🔴 Red' : '🟡 Yellow';
+  const isMyTurn = currentTurn === myPlayer;
+
   return (
     <View style={styles.modalContainer}>
       <View style={styles.gameModalContent}>
         <Text style={styles.gameModalTitle}>Connect Four</Text>
 
-        <Text style={styles.turnText}>
+        <Text style={styles.playerInfoText}>
+          You are: {myColor} | Partner: {partnerName}
+        </Text>
+
+        <Text style={[styles.turnText, isMyTurn && styles.myTurnText]}>
           {winner
             ? winner === 'draw'
               ? "It's a Draw!"
-              : `${winner === 1 ? '🔴 Red' : '🟡 Yellow'} Wins!`
-            : `${currentPlayer === 1 ? '🔴 Red' : '🟡 Yellow'}'s Turn`}
+              : `${winner} Wins!`
+            : isMyTurn
+            ? "Your Turn!"
+            : `${partnerName}'s Turn`}
         </Text>
 
         <View style={styles.connectFourBoard}>
@@ -1013,6 +1873,7 @@ function ConnectFourGame({ onClose, onComplete }) {
                     isWinningCell(rowIndex, colIndex) && styles.connectFourWinningCell,
                   ]}
                   onPress={() => dropPiece(colIndex)}
+                  activeOpacity={!isMyTurn || winner ? 1 : 0.7}
                 >
                   {cell && (
                     <View style={[
@@ -1028,13 +1889,13 @@ function ConnectFourGame({ onClose, onComplete }) {
 
         <View style={styles.gameButtons}>
           <TouchableOpacity style={styles.gameButton} onPress={reset}>
-            <Text style={styles.gameButtonText}>Reset</Text>
+            <Text style={styles.gameButtonText}>New Game</Text>
           </TouchableOpacity>
 
           {winner && (
             <TouchableOpacity
               style={[styles.gameButton, styles.completeButton]}
-              onPress={onComplete}
+              onPress={() => onComplete(winner !== 'draw' && winner === myColor)}
             >
               <Text style={styles.gameButtonText}>Complete</Text>
             </TouchableOpacity>
@@ -1048,11 +1909,27 @@ function ConnectFourGame({ onClose, onComplete }) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Custom Alert Modal */}
+      <Modal visible={customAlert.visible} transparent animationType="fade">
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertContainer}>
+            <Text style={styles.customAlertTitle}>{customAlert.title}</Text>
+            <Text style={styles.customAlertMessage}>{customAlert.message}</Text>
+            <TouchableOpacity
+              style={styles.customAlertButton}
+              onPress={() => setCustomAlert({ visible: false, title: '', message: '' })}
+            >
+              <Text style={styles.customAlertButtonText}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
-function ReversiGame({ onClose, onComplete }) {
+export function ReversiGame({ couple, userId, onClose, onTurnComplete, onComplete }) {
   const SIZE = 8;
 
   // Initialize board with starting position
@@ -1066,31 +1943,166 @@ function ReversiGame({ onClose, onComplete }) {
   }
 
   const [board, setBoard] = useState(initBoard());
-  const [currentPlayer, setCurrentPlayer] = useState(1); // 1 = Black, 2 = White
+  const [currentTurn, setCurrentTurn] = useState('player1');
   const [validMoves, setValidMoves] = useState([]);
   const [gameOver, setGameOver] = useState(false);
   const [scores, setScores] = useState({ black: 2, white: 2 });
+  const [myPlayer, setMyPlayer] = useState(null);
+  const [gameId, setGameId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [partnerName, setPartnerName] = useState('Partner');
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
 
   useEffect(() => {
-    const moves = getValidMoves(board, currentPlayer);
-    setValidMoves(moves);
+    initGame();
+  }, []);
 
-    if (moves.length === 0) {
-      // Current player has no moves, check if opponent has moves
-      const opponentMoves = getValidMoves(board, currentPlayer === 1 ? 2 : 1);
-      if (opponentMoves.length === 0) {
-        // Game over
-        setGameOver(true);
-      } else {
-        // Pass turn
-        setCurrentPlayer(currentPlayer === 1 ? 2 : 1);
+  function showAlert(title, message) {
+    setCustomAlert({ visible: true, title, message });
+  }
+
+  async function initGame() {
+    if (!couple || !userId) {
+      setLoading(false);
+      return;
+    }
+
+    const playerNum = couple.auth_user1_id === userId ? 'player1' : 'player2';
+    setMyPlayer(playerNum);
+    setPartnerName(playerNum === 'player1' ? 'Player 2' : 'Player 1');
+
+    const { data: existingGame } = await supabase
+      .from('games')
+      .select('*')
+      .eq('couple_id', couple.id)
+      .eq('game_type', 'reversi')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingGame) {
+      setGameId(existingGame.id);
+      setBoard(existingGame.game_state.board);
+      setCurrentTurn(existingGame.current_turn);
+      setGameOver(existingGame.winner !== null);
+      setScores(existingGame.game_state.scores || { black: 2, white: 2 });
+    } else {
+      const { data: newGame } = await supabase
+        .from('games')
+        .insert({
+          couple_id: couple.id,
+          game_type: 'reversi',
+          game_state: { board: initBoard(), scores: { black: 2, white: 2 } },
+          current_turn: playerNum,
+          is_active: true,
+        })
+        .select()
+        .single();
+
+      if (newGame) {
+        setGameId(newGame.id);
       }
     }
-  }, [board, currentPlayer]);
+
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (!gameId) return;
+
+    let isMounted = true;
+
+    // Poll for updates every 2 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from('games')
+          .select('*')
+          .eq('id', gameId)
+          .single();
+
+        if (data && isMounted) {
+          setBoard(data.game_state.board);
+          setCurrentTurn(data.current_turn);
+          setScores(data.game_state.scores || { black: 2, white: 2 });
+
+          // Defer game over update to avoid accessibility state errors
+          InteractionManager.runAfterInteractions(() => {
+            setGameOver(data.winner !== null);
+          });
+        }
+      } catch (error) {
+        // Ignore errors during polling (component might be unmounting)
+      }
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [gameId]);
+
+  useEffect(() => {
+    if (!myPlayer) return;
+
+    const playerNumber = currentTurn === 'player1' ? 1 : 2;
+    const moves = getValidMoves(board, playerNumber);
+    setValidMoves(moves);
+
+    if (moves.length === 0 && !gameOver) {
+      // Current player has no moves, check if opponent has moves
+      const opponentMoves = getValidMoves(board, playerNumber === 1 ? 2 : 1);
+      if (opponentMoves.length === 0) {
+        // Game over - calculate winner
+        calculateScoresAndEnd();
+      } else {
+        // Pass turn
+        passTurn();
+      }
+    }
+  }, [board, currentTurn, myPlayer]);
 
   useEffect(() => {
     calculateScores();
   }, [board]);
+
+  async function passTurn() {
+    if (!gameId) return;
+
+    const nextTurn = currentTurn === 'player1' ? 'player2' : 'player1';
+    await supabase
+      .from('games')
+      .update({ current_turn: nextTurn })
+      .eq('id', gameId);
+
+    // Refresh badge immediately
+    if (onTurnComplete) {
+      await onTurnComplete();
+    }
+  }
+
+  async function calculateScoresAndEnd() {
+    let black = 0;
+    let white = 0;
+    board.forEach(row => {
+      row.forEach(cell => {
+        if (cell === 1) black++;
+        if (cell === 2) white++;
+      });
+    });
+
+    const winner = black > white ? 'Black' : white > black ? 'White' : 'Draw';
+
+    await supabase
+      .from('games')
+      .update({
+        winner: winner,
+        is_active: false,
+        game_state: { board, scores: { black, white } }
+      })
+      .eq('id', gameId);
+  }
 
   function getValidMoves(board, player) {
     const moves = [];
@@ -1164,20 +2176,48 @@ function ReversiGame({ onClose, onComplete }) {
     return toFlip;
   }
 
-  function placePiece(row, col) {
+  async function placePiece(row, col) {
+    if (currentTurn !== myPlayer) {
+      showAlert('Not Your Turn', "Wait for your partner's move! 💕");
+      return;
+    }
+
     if (gameOver) return;
     if (!validMoves.some(([r, c]) => r === row && c === col)) return;
 
+    const playerNumber = myPlayer === 'player1' ? 1 : 2;
     const newBoard = board.map(r => [...r]);
-    newBoard[row][col] = currentPlayer;
+    newBoard[row][col] = playerNumber;
 
-    const toFlip = getPiecesToFlip(board, row, col, currentPlayer);
+    const toFlip = getPiecesToFlip(board, row, col, playerNumber);
     toFlip.forEach(([r, c]) => {
-      newBoard[r][c] = currentPlayer;
+      newBoard[r][c] = playerNumber;
     });
 
-    setBoard(newBoard);
-    setCurrentPlayer(currentPlayer === 1 ? 2 : 1);
+    // Calculate new scores
+    let black = 0;
+    let white = 0;
+    newBoard.forEach(row => {
+      row.forEach(cell => {
+        if (cell === 1) black++;
+        if (cell === 2) white++;
+      });
+    });
+
+    const nextTurn = myPlayer === 'player1' ? 'player2' : 'player1';
+
+    await supabase
+      .from('games')
+      .update({
+        game_state: { board: newBoard, scores: { black, white } },
+        current_turn: nextTurn,
+      })
+      .eq('id', gameId);
+
+    // Refresh badge immediately
+    if (onTurnComplete) {
+      await onTurnComplete();
+    }
   }
 
   function calculateScores() {
@@ -1192,22 +2232,46 @@ function ReversiGame({ onClose, onComplete }) {
     setScores({ black, white });
   }
 
-  function reset() {
-    setBoard(initBoard());
-    setCurrentPlayer(1);
-    setGameOver(false);
-    setScores({ black: 2, white: 2 });
+  async function reset() {
+    if (!gameId) return;
+
+    await supabase
+      .from('games')
+      .update({
+        game_state: { board: initBoard(), scores: { black: 2, white: 2 } },
+        current_turn: 'player1',
+        winner: null,
+        is_active: true,
+      })
+      .eq('id', gameId);
   }
 
   function isValidMove(row, col) {
     return validMoves.some(([r, c]) => r === row && c === col);
   }
 
+  if (loading) {
+    return (
+      <View style={styles.modalContainer}>
+        <View style={styles.gameModalContent}>
+          <Text style={styles.gameModalTitle}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const myColor = myPlayer === 'player1' ? '⚫ Black' : '⚪ White';
+  const isMyTurn = currentTurn === myPlayer;
+
   return (
     <View style={styles.modalContainer}>
       <ScrollView contentContainerStyle={styles.reversiScrollContent}>
         <View style={styles.reversiContent}>
           <Text style={styles.gameModalTitle}>Reversi</Text>
+
+          <Text style={styles.playerInfoText}>
+            You are: {myColor} | Partner: {partnerName}
+          </Text>
 
           <View style={styles.reversiHeader}>
             <View style={styles.reversiPlayerScore}>
@@ -1221,8 +2285,8 @@ function ReversiGame({ onClose, onComplete }) {
           </View>
 
           {!gameOver ? (
-            <Text style={styles.turnText}>
-              {currentPlayer === 1 ? '⚫ Black' : '⚪ White'}'s Turn
+            <Text style={[styles.turnText, isMyTurn && styles.myTurnText]}>
+              {isMyTurn ? 'Your Turn!' : `${partnerName}'s Turn`}
             </Text>
           ) : (
             <Text style={styles.turnText}>
@@ -1245,6 +2309,7 @@ function ReversiGame({ onClose, onComplete }) {
                       isValidMove(rowIndex, colIndex) && styles.reversiValidCell,
                     ]}
                     onPress={() => placePiece(rowIndex, colIndex)}
+                    activeOpacity={!isMyTurn || gameOver ? 1 : 0.7}
                   >
                     {cell && (
                       <View style={[
@@ -1270,7 +2335,11 @@ function ReversiGame({ onClose, onComplete }) {
             {gameOver && (
               <TouchableOpacity
                 style={[styles.gameButton, styles.completeButton]}
-                onPress={onComplete}
+                onPress={() => {
+                  const isWinner = (myPlayer === 'player1' && scores.black > scores.white) ||
+                                   (myPlayer === 'player2' && scores.white > scores.black);
+                  onComplete(isWinner);
+                }}
               >
                 <Text style={styles.gameButtonText}>Complete</Text>
               </TouchableOpacity>
@@ -1285,6 +2354,22 @@ function ReversiGame({ onClose, onComplete }) {
           </View>
         </View>
       </ScrollView>
+
+      {/* Custom Alert Modal */}
+      <Modal visible={customAlert.visible} transparent animationType="fade">
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertContainer}>
+            <Text style={styles.customAlertTitle}>{customAlert.title}</Text>
+            <Text style={styles.customAlertMessage}>{customAlert.message}</Text>
+            <TouchableOpacity
+              style={styles.customAlertButton}
+              onPress={() => setCustomAlert({ visible: false, title: '', message: '' })}
+            >
+              <Text style={styles.customAlertButtonText}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1699,7 +2784,7 @@ function WhosMoreLikelyGame({ onClose, onComplete }) {
   );
 }
 
-function WhiteboardGame({ onClose, onComplete }) {
+export function WhiteboardGame({ couple, userId, onClose, onComplete }) {
   const [currentTab, setCurrentTab] = useState('canvas');
   const [currentColor, setCurrentColor] = useState('#FF1493');
   const [brushSize, setBrushSize] = useState(4);
@@ -1737,13 +2822,57 @@ function WhiteboardGame({ onClose, onComplete }) {
 
   async function loadSavedDrawings() {
     try {
-      const drawings = await AsyncStorage.getItem('whiteboard_drawings');
-      if (drawings) {
-        setSavedDrawings(JSON.parse(drawings));
-      }
-      const widgetId = await AsyncStorage.getItem('widgetDrawingId');
-      if (widgetId) {
-        setWidgetDrawingId(widgetId);
+      if (isSupabaseConfigured() && couple) {
+        console.log('📂 Loading drawings from Supabase for couple:', couple.id);
+        // Load from Supabase
+        const { data: drawings, error } = await supabase
+          .from('whiteboard_drawings')
+          .select('*')
+          .eq('couple_id', couple.id)
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          console.error('❌ Error loading drawings from Supabase:', error);
+          console.error('Error details:', JSON.stringify(error, null, 2));
+        }
+
+        if (!error && drawings) {
+          console.log(`✅ Loaded ${drawings.length} drawings from Supabase`);
+          const formattedDrawings = drawings.map(d => ({
+            id: d.id,
+            image: null, // Will be loaded on demand
+            publicUrl: d.image_url,
+            canvasWidth: d.canvas_width,
+            canvasHeight: d.canvas_height,
+            backgroundColor: d.background_color,
+            createdAt: d.created_at,
+          }));
+          setSavedDrawings(formattedDrawings);
+          console.log('Drawing IDs:', formattedDrawings.map(d => d.id));
+        } else if (!error && !drawings) {
+          console.log('⚠️ No drawings found in database');
+        }
+
+        // Get widget drawing ID from couple
+        const { data: coupleData } = await supabase
+          .from('couples')
+          .select('widget_drawing_id')
+          .eq('id', couple.id)
+          .single();
+
+        if (coupleData?.widget_drawing_id) {
+          setWidgetDrawingId(coupleData.widget_drawing_id);
+        }
+      } else {
+        // Fallback to local storage
+        const drawings = await AsyncStorage.getItem('whiteboard_drawings');
+        if (drawings) {
+          setSavedDrawings(JSON.parse(drawings));
+        }
+        const widgetId = await AsyncStorage.getItem('widgetDrawingId');
+        if (widgetId) {
+          setWidgetDrawingId(widgetId);
+        }
       }
     } catch (error) {
       console.error('Error loading drawings:', error);
@@ -1761,10 +2890,19 @@ function WhiteboardGame({ onClose, onComplete }) {
         return;
       }
 
-      // Don't download - just use the base64 data we already have
-      // Widgets will use the base64 image data directly from drawing.image
-      console.log('Widget will use base64 data, length:', drawing.image?.length);
+      if (isSupabaseConfigured() && couple) {
+        // Update widget drawing ID in couples table (synced for both users)
+        const { error } = await supabase
+          .from('couples')
+          .update({ widget_drawing_id: drawingId })
+          .eq('id', couple.id);
 
+        if (error) {
+          console.error('Error updating widget in database:', error);
+        }
+      }
+
+      // Also save to local storage for widget to use
       await AsyncStorage.setItem('widgetDrawingId', drawingId);
       setWidgetDrawingId(drawingId);
 
@@ -1774,7 +2912,7 @@ function WhiteboardGame({ onClose, onComplete }) {
         console.log('Widget update complete');
       }, 500);
 
-      showAlert('Success!', 'Drawing set as widget! The widget should update shortly.');
+      showAlert('Success!', 'Drawing set as widget for both of you! The widget should update shortly.');
     } catch (error) {
       console.error('Error setting widget drawing:', error);
       showAlert('Error', 'Failed to set widget drawing');
@@ -1851,6 +2989,27 @@ function WhiteboardGame({ onClose, onComplete }) {
             publicUrl = urlData.publicUrl;
             console.log('Upload successful!');
             console.log('Public URL:', publicUrl);
+
+            // Save to database if couple is available
+            if (couple && publicUrl) {
+              const { error: dbError } = await supabase
+                .from('whiteboard_drawings')
+                .insert({
+                  id: drawingId,
+                  couple_id: couple.id,
+                  image_url: publicUrl,
+                  canvas_width: Math.round(imageData.width),
+                  canvas_height: Math.round(imageData.height),
+                  background_color: backgroundColor,
+                  created_by: userId,
+                });
+
+              if (dbError) {
+                console.error('Error saving to database:', dbError);
+              } else {
+                console.log('Drawing saved to database!');
+              }
+            }
           }
         } catch (uploadError) {
           console.error('Error uploading to Supabase:', uploadError);
@@ -1883,7 +3042,7 @@ function WhiteboardGame({ onClose, onComplete }) {
       await AsyncStorage.setItem('savedDrawings', JSON.stringify(updatedDrawings)); // For widget
       updateGalleryWidget(); // Update widget
 
-      showAlert('Success!', 'Drawing saved to gallery!');
+      showAlert('Success!', 'Drawing saved to gallery and shared with your partner!');
 
       // Clear canvas and switch to gallery tab
       canvasRef.current.clear();
@@ -1911,7 +3070,7 @@ function WhiteboardGame({ onClose, onComplete }) {
             setSavedDrawings(updatedDrawings);
 
             try {
-              // Delete from Supabase storage if it exists
+              // Delete from Supabase storage and database if it exists
               if (drawingToDelete?.publicUrl && isSupabaseConfigured()) {
                 try {
                   const fileName = `drawings/${drawingToDelete.id}.png`;
@@ -1923,6 +3082,20 @@ function WhiteboardGame({ onClose, onComplete }) {
                     console.error('Supabase delete error:', deleteError);
                   } else {
                     console.log('Deleted from Supabase storage:', fileName);
+                  }
+
+                  // Also delete from database
+                  if (couple) {
+                    const { error: dbDeleteError } = await supabase
+                      .from('whiteboard_drawings')
+                      .delete()
+                      .eq('id', drawingId);
+
+                    if (dbDeleteError) {
+                      console.error('Database delete error:', dbDeleteError);
+                    } else {
+                      console.log('Deleted from database:', drawingId);
+                    }
                   }
                 } catch (supabaseError) {
                   console.error('Error deleting from Supabase:', supabaseError);
@@ -2152,6 +3325,12 @@ function WhiteboardGame({ onClose, onComplete }) {
                         style={{ width: '100%', height: '100%' }}
                         resizeMode="contain"
                       />
+                    ) : drawing.publicUrl ? (
+                      <Image
+                        source={{ uri: drawing.publicUrl }}
+                        style={{ width: '100%', height: '100%' }}
+                        resizeMode="contain"
+                      />
                     ) : (
                       drawing.paths?.map((pathData, index) => renderPath(pathData, index, scale, scale))
                     )}
@@ -2330,6 +3509,12 @@ function WhiteboardGame({ onClose, onComplete }) {
                   style={{ width: '100%', height: '100%' }}
                   resizeMode="contain"
                 />
+              ) : selectedDrawing.publicUrl ? (
+                <Image
+                  source={{ uri: selectedDrawing.publicUrl }}
+                  style={{ width: '100%', height: '100%' }}
+                  resizeMode="contain"
+                />
               ) : (
                 selectedDrawing.paths?.map((pathData, index) => {
                   const viewerSize = 350;
@@ -2442,6 +3627,31 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FF69B4',
   },
+  gameCardPending: {
+    borderColor: '#FF1493',
+    borderWidth: 3,
+    shadowColor: '#FF1493',
+    shadowOpacity: 0.6,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  gameCardContent: {
+    alignItems: 'center',
+  },
+  yourTurnBadge: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    backgroundColor: '#FF1493',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  yourTurnText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
   emptyContainer: {
     alignItems: 'center',
     marginTop: 50,
@@ -2481,11 +3691,21 @@ const styles = StyleSheet.create({
     color: '#FF1493',
     marginBottom: 20,
   },
+  playerInfoText: {
+    fontSize: 14,
+    color: '#FF1493',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
   turnText: {
     fontSize: 18,
     color: '#FF69B4',
     marginBottom: 20,
     fontWeight: 'bold',
+  },
+  myTurnText: {
+    color: '#FF1493',
+    fontSize: 20,
   },
   board: {
     flexDirection: 'row',

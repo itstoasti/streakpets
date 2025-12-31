@@ -11,7 +11,9 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Animatable from 'react-native-animatable';
-import { getCurrency, saveCurrency, getOwnedPets, saveOwnedPets, getPetData, savePetData, getStreakData, saveStreakData, getCurrentPetType, saveCurrentPetType, getSpecificPetData, saveSpecificPetData } from '../../lib/storage';
+import { getCurrency, saveCurrency, getOwnedPets, saveOwnedPets, getPetData, savePetData, getStreakData, saveStreakData, getCurrentPetType, saveCurrentPetType, getSpecificPetData, saveSpecificPetData, getCoupleData } from '../../lib/storage';
+import { supabase, isSupabaseConfigured } from '../../lib/supabase';
+import { useIsFocused } from '@react-navigation/native';
 
 // Available pets in the shop with prices
 const SHOP_PETS = {
@@ -78,10 +80,14 @@ export default function MarketplaceScreen() {
   const [streakRepairs, setStreakRepairs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
+  const [couple, setCouple] = useState(null);
+  const isFocused = useIsFocused();
 
   useEffect(() => {
-    loadData();
-  }, []);
+    if (isFocused) {
+      loadData();
+    }
+  }, [isFocused]);
 
   function showAlert(title, message) {
     setCustomAlert({ visible: true, title, message });
@@ -96,10 +102,12 @@ export default function MarketplaceScreen() {
     const pets = await getOwnedPets();
     const activePet = await getPetData();
     const streakData = await getStreakData();
+    const coupleData = await getCoupleData();
     setCurrency(userCurrency);
     setOwnedPets(pets);
     setCurrentPet(activePet);
     setStreakRepairs(streakData.streakRepairs || 0);
+    setCouple(coupleData);
     setLoading(false);
   }
 
@@ -130,41 +138,97 @@ export default function MarketplaceScreen() {
   }
 
   async function equipPet(petType) {
-    if (!currentPet) return;
-
-    // Save current pet's data before switching
-    if (currentPet.pet_type) {
-      await saveSpecificPetData(currentPet.pet_type, {
-        name: currentPet.pet_name,
-        happiness: currentPet.happiness,
-        last_decay: currentPet.last_decay,
-      });
+    if (!couple || !isSupabaseConfigured()) {
+      showAlert('Error', 'Database not configured. Cannot equip pet.');
+      return;
     }
 
-    // Load the new pet's data or initialize with defaults
-    let newPetData = await getSpecificPetData(petType);
-    if (!newPetData) {
-      newPetData = {
-        name: SHOP_PETS[petType].name,
-        happiness: 50,
-        last_decay: new Date().toISOString(),
-      };
-      await saveSpecificPetData(petType, newPetData);
+    console.log('🔄 Equipping pet type:', petType);
+
+    try {
+      // Check if a pet of this type already exists for this couple
+      const { data: existingPets, error: searchError } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('couple_id', couple.id)
+        .eq('pet_type', petType);
+
+      if (searchError) {
+        console.error('Error searching for existing pet:', searchError);
+        showAlert('Error', 'Failed to search for pet. Please try again.');
+        return;
+      }
+
+      if (existingPets && existingPets.length > 0) {
+        // Pet of this type already exists, switch to it
+        const existingPet = existingPets[0];
+        console.log('✅ Found existing pet:', existingPet.pet_name, '- switching to it');
+
+        // Unequip all pets
+        await supabase
+          .from('pets')
+          .update({ is_equipped: false })
+          .eq('couple_id', couple.id);
+
+        // Equip this pet
+        const { data: equippedPet, error: equipError } = await supabase
+          .from('pets')
+          .update({ is_equipped: true })
+          .eq('id', existingPet.id)
+          .select()
+          .single();
+
+        if (equipError) {
+          console.error('Error equipping pet:', equipError);
+          showAlert('Error', 'Failed to equip pet. Please try again.');
+          return;
+        }
+
+        // Update local state
+        setCurrentPet(equippedPet);
+        await savePetData(equippedPet);
+        showAlert('Pet Equipped!', `Switched to ${equippedPet.pet_name}!`);
+      } else {
+        // No pet of this type exists, create a new one
+        console.log('📝 Creating new pet of type:', petType);
+
+        // Unequip all existing pets
+        await supabase
+          .from('pets')
+          .update({ is_equipped: false })
+          .eq('couple_id', couple.id);
+
+        // Create new pet
+        const { data: newPet, error: createError } = await supabase
+          .from('pets')
+          .insert({
+            couple_id: couple.id,
+            pet_type: petType,
+            pet_name: SHOP_PETS[petType].name,
+            happiness: 50,
+            last_decay: new Date().toISOString(),
+            is_equipped: true,
+          })
+          .select()
+          .single();
+
+        if (createError) {
+          console.error('Error creating pet:', createError);
+          showAlert('Error', 'Failed to create pet. Please try again.');
+          return;
+        }
+
+        console.log('✅ Created new pet:', newPet.pet_name, 'ID:', newPet.id);
+
+        // Update local state
+        setCurrentPet(newPet);
+        await savePetData(newPet);
+        showAlert('Pet Equipped!', `${newPet.pet_name} is now your active pet!`);
+      }
+    } catch (err) {
+      console.error('Unexpected error equipping pet:', err);
+      showAlert('Error', 'An unexpected error occurred.');
     }
-
-    // Update the current pet
-    const updatedPet = {
-      ...currentPet,
-      pet_type: petType,
-      pet_name: newPetData.name,
-      happiness: newPetData.happiness,
-      last_decay: newPetData.last_decay,
-    };
-
-    await savePetData(updatedPet);
-    await saveCurrentPetType(petType);
-    setCurrentPet(updatedPet);
-    showAlert('Success!', `Equipped ${newPetData.name}!`);
   }
 
   async function purchaseStreakRepair() {

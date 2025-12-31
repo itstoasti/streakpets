@@ -10,36 +10,46 @@ import {
   Modal,
 } from 'react-native';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
+import { useAuth } from '../../lib/authContext';
+import { useIsFocused } from '@react-navigation/native';
 import { getCoupleData, getPetData, savePetData, getStreakData, saveStreakData } from '../../lib/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Animatable from 'react-native-animatable';
 
 export default function NotesScreen() {
+  const { user } = useAuth();
+  const isFocused = useIsFocused();
   const [notes, setNotes] = useState([]);
   const [couple, setCouple] = useState(null);
-  const [userId, setUserId] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newNoteContent, setNewNoteContent] = useState('');
   const [loading, setLoading] = useState(true);
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
+  const [editingNote, setEditingNote] = useState(null);
 
   useEffect(() => {
-    loadData();
-    subscribeToNotes();
-  }, []);
+    if (isFocused && user) {
+      loadData();
+    }
+  }, [isFocused, user]);
+
+  useEffect(() => {
+    if (couple) {
+      subscribeToNotes();
+    }
+  }, [couple]);
+
+  function showAlert(title, message) {
+    setCustomAlert({ visible: true, title, message });
+  }
 
   async function loadData() {
     try {
-      // Get authenticated user
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-      if (authError || !user) {
-        console.log('No authenticated user, skipping data load');
+      if (!user) {
         setLoading(false);
         return;
       }
-
-      setUserId(user.id);
 
       // Load couple from local storage
       const localCouple = await getCoupleData();
@@ -50,11 +60,12 @@ export default function NotesScreen() {
           .from('couples')
           .select('*')
           .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
-          .single();
+          .order('created_at', { ascending: false })
+          .limit(1);
 
-        if (coupleData) {
-          setCouple(coupleData);
-          await loadNotes(coupleData.id);
+        if (coupleData && coupleData.length > 0) {
+          setCouple(coupleData[0]);
+          await loadNotes(coupleData[0].id);
         }
       } else {
         // Local only mode
@@ -111,6 +122,10 @@ export default function NotesScreen() {
         (payload) => {
           if (payload.eventType === 'INSERT') {
             setNotes(prev => [payload.new, ...prev]);
+          } else if (payload.eventType === 'UPDATE') {
+            setNotes(prev => prev.map(note =>
+              note.id === payload.new.id ? payload.new : note
+            ));
           } else if (payload.eventType === 'DELETE') {
             setNotes(prev => prev.filter(note => note.id !== payload.old.id));
           }
@@ -121,46 +136,82 @@ export default function NotesScreen() {
     return () => subscription.unsubscribe();
   }
 
+  function openEditModal(note) {
+    setEditingNote(note);
+    setNewNoteContent(note.content);
+    setShowAddModal(true);
+  }
+
   async function addNote() {
     if (!newNoteContent.trim()) {
       Alert.alert('Error', 'Please write something!');
       return;
     }
 
-    if (isSupabaseConfigured() && couple) {
-      const { error } = await supabase.from('notes').insert({
-        couple_id: couple.id,
-        auth_user_id: userId,
-        content: newNoteContent.trim(),
-      });
+    if (editingNote) {
+      // Edit existing note
+      if (isSupabaseConfigured() && couple) {
+        const { error } = await supabase
+          .from('notes')
+          .update({ content: newNoteContent.trim() })
+          .eq('id', editingNote.id);
 
-      if (error) {
-        Alert.alert('Error', error.message);
-        return;
+        if (error) {
+          Alert.alert('Error', error.message);
+          return;
+        }
+      } else {
+        // Local mode
+        const updatedNotes = notes.map(note =>
+          note.id === editingNote.id
+            ? { ...note, content: newNoteContent.trim() }
+            : note
+        );
+        setNotes(updatedNotes);
+        await saveNotesLocal(updatedNotes);
       }
+
+      setNewNoteContent('');
+      setShowAddModal(false);
+      setEditingNote(null);
+      showAlert('Success!', 'Note updated! 💕');
     } else {
-      // Local mode
-      const newNote = {
-        id: Date.now().toString(),
-        auth_user_id: userId,
-        content: newNoteContent.trim(),
-        created_at: new Date().toISOString(),
-      };
+      // Add new note
+      if (isSupabaseConfigured() && couple) {
+        const { error } = await supabase.from('notes').insert({
+          couple_id: couple.id,
+          auth_user_id: user.id,
+          content: newNoteContent.trim(),
+        });
 
-      const updatedNotes = [newNote, ...notes];
-      setNotes(updatedNotes);
-      await saveNotesLocal(updatedNotes);
+        if (error) {
+          Alert.alert('Error', error.message);
+          return;
+        }
+      } else {
+        // Local mode
+        const newNote = {
+          id: Date.now().toString(),
+          auth_user_id: user?.id,
+          content: newNoteContent.trim(),
+          created_at: new Date().toISOString(),
+        };
+
+        const updatedNotes = [newNote, ...notes];
+        setNotes(updatedNotes);
+        await saveNotesLocal(updatedNotes);
+      }
+
+      // Add happiness to pet
+      await addHappiness(3);
+
+      // Update streak
+      await updateStreak();
+
+      setNewNoteContent('');
+      setShowAddModal(false);
+      showAlert('Success!', 'Note added! Your pet gained 3 happiness! 💕');
     }
-
-    // Add happiness to pet
-    await addHappiness(3);
-
-    // Update streak
-    await updateStreak();
-
-    setNewNoteContent('');
-    setShowAddModal(false);
-    Alert.alert('Success!', 'Note added! Your pet gained 3 happiness! 💕');
   }
 
   async function updateStreak() {
@@ -284,22 +335,25 @@ export default function NotesScreen() {
                     minute: '2-digit',
                   })}
                 </Text>
-                {note.auth_user_id === userId && (
+                <View style={styles.noteActions}>
+                  <TouchableOpacity onPress={() => openEditModal(note)}>
+                    <Text style={styles.editText}>Edit</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity onPress={() => deleteNote(note.id)}>
                     <Text style={styles.deleteText}>Delete</Text>
                   </TouchableOpacity>
-                )}
+                </View>
               </View>
             </Animatable.View>
           ))
         )}
       </ScrollView>
 
-      {/* Add Note Modal */}
+      {/* Add/Edit Note Modal */}
       <Modal visible={showAddModal} animationType="slide" transparent>
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add a Note</Text>
+            <Text style={styles.modalTitle}>{editingNote ? 'Edit Note' : 'Add a Note'}</Text>
 
             <TextInput
               style={styles.textArea}
@@ -318,6 +372,7 @@ export default function NotesScreen() {
                 onPress={() => {
                   setShowAddModal(false);
                   setNewNoteContent('');
+                  setEditingNote(null);
                 }}
               >
                 <Text style={styles.buttonText}>Cancel</Text>
@@ -327,9 +382,27 @@ export default function NotesScreen() {
                 style={[styles.button, styles.saveButton]}
                 onPress={addNote}
               >
-                <Text style={styles.buttonText}>Save (+3 ❤️)</Text>
+                <Text style={styles.buttonText}>
+                  {editingNote ? 'Update' : 'Save (+3 ❤️)'}
+                </Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Custom Alert Modal */}
+      <Modal visible={customAlert.visible} transparent animationType="fade">
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertContainer}>
+            <Text style={styles.customAlertTitle}>{customAlert.title}</Text>
+            <Text style={styles.customAlertMessage}>{customAlert.message}</Text>
+            <TouchableOpacity
+              style={styles.customAlertButton}
+              onPress={() => setCustomAlert({ visible: false, title: '', message: '' })}
+            >
+              <Text style={styles.customAlertButtonText}>OK</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -421,6 +494,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#FF69B4',
   },
+  noteActions: {
+    flexDirection: 'row',
+    gap: 15,
+  },
+  editText: {
+    fontSize: 12,
+    color: '#FF69B4',
+    fontWeight: 'bold',
+  },
   deleteText: {
     fontSize: 12,
     color: '#FF1493',
@@ -477,5 +559,51 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  customAlertOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  customAlertContainer: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 25,
+    width: '80%',
+    maxWidth: 400,
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#FF1493',
+  },
+  customAlertTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FF1493',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  customAlertMessage: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  customAlertButton: {
+    backgroundColor: '#FF1493',
+    paddingVertical: 12,
+    paddingHorizontal: 40,
+    borderRadius: 25,
+    shadowColor: '#FF1493',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  customAlertButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });

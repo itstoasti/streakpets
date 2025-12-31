@@ -14,6 +14,8 @@ import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { getCoupleData, saveCoupleData, clearAllData, getPetData, savePetData, getCurrency, saveCurrency, getOwnedPets, saveOwnedPets, getStreakData, saveStreakData, getCurrentPetType, saveCurrentPetType, getSpecificPetData, saveSpecificPetData } from '../../lib/storage';
 import { useAuth } from '../../lib/authContext';
+import { getMyPendingTurns } from '../../lib/gameHelper';
+import { TicTacToeGame, ConnectFourGame, ReversiGame, DotsAndBoxesGame, WhiteboardGame } from './activity';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Clipboard from 'expo-clipboard';
 import * as Animatable from 'react-native-animatable';
@@ -81,6 +83,18 @@ export default function PetScreen() {
   const [showCoinsModal, setShowCoinsModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [userEmail, setUserEmail] = useState('');
+  const [showLeaveCoupleModal, setShowLeaveCoupleModal] = useState(false);
+  const [partnerEmail, setPartnerEmail] = useState('');
+  const [showChangePetModal, setShowChangePetModal] = useState(false);
+  const [allPets, setAllPets] = useState([]);
+  const [ownedPets, setOwnedPets] = useState([]);
+  const [pendingGames, setPendingGames] = useState([]);
+  const [showHappinessInfoModal, setShowHappinessInfoModal] = useState(false);
+  const [showTicTacToe, setShowTicTacToe] = useState(false);
+  const [showConnectFour, setShowConnectFour] = useState(false);
+  const [showReversi, setShowReversi] = useState(false);
+  const [showDotsAndBoxes, setShowDotsAndBoxes] = useState(false);
+  const [showWhiteboard, setShowWhiteboard] = useState(false);
 
   useEffect(() => {
     loadUserData();
@@ -88,12 +102,117 @@ export default function PetScreen() {
     return () => clearInterval(interval);
   }, []);
 
+  // Poll for pet and couple updates every 10 seconds, only when tab is focused
+  useEffect(() => {
+    if (!couple || !isSupabaseConfigured() || !isFocused) return;
+
+    let isMounted = true;
+
+    const pollInterval = setInterval(async () => {
+      if (!isFocused) return; // Skip polling if tab is not focused
+
+      try {
+        // Poll for EQUIPPED pet (in case it changed on another device)
+        const { data: petData } = await supabase
+          .from('pets')
+          .select('*')
+          .eq('couple_id', couple.id)
+          .eq('is_equipped', true)
+          .maybeSingle();
+
+        if (petData && isMounted) {
+          // Check if pet actually changed
+          if (!pet || pet.id !== petData.id || pet.happiness !== petData.happiness || pet.pet_name !== petData.pet_name) {
+            console.log('🔄 Pet changed or updated:', petData.pet_name, 'Happiness:', petData.happiness);
+            setPet(petData);
+            savePetData(petData);
+          }
+        }
+
+        // Poll for couple updates
+        const { data: coupleData } = await supabase
+          .from('couples')
+          .select('*')
+          .eq('id', couple.id)
+          .single();
+
+        if (coupleData && isMounted) {
+          setCouple(coupleData);
+          saveCoupleData(coupleData);
+          // Update streak display
+          setStreakData({
+            currentStreak: coupleData.current_streak || 0,
+            lastActivityDate: coupleData.last_activity_date || null,
+            streakRepairs: 0,
+          });
+        }
+      } catch (error) {
+        // Ignore errors during polling (component might be unmounting)
+      }
+    }, 10000); // Poll every 10 seconds
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [couple?.id, isFocused]);
+
   // Reload pet data when tab comes into focus
   useEffect(() => {
     if (isFocused) {
       reloadPetData();
     }
   }, [isFocused]);
+
+  // Load pending games
+  useEffect(() => {
+    async function loadPendingGames() {
+      if (!couple || !userId || !isFocused) return;
+      try {
+        const games = await getMyPendingTurns(couple.id, userId);
+        setPendingGames(games || []);
+      } catch (error) {
+        console.error('Error loading pending games:', error);
+      }
+    }
+    loadPendingGames();
+    // Poll every 10 seconds
+    const interval = setInterval(loadPendingGames, 10000);
+    return () => clearInterval(interval);
+  }, [couple?.id, userId, isFocused]);
+
+  // Real-time subscription for pet changes
+  useEffect(() => {
+    if (!couple || !isSupabaseConfigured()) return;
+
+    const subscription = supabase
+      .channel(`pet_changes_${couple.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'pets',
+          filter: `couple_id=eq.${couple.id}`,
+        },
+        async (payload) => {
+          console.log('🔔 Pet update received:', payload.new);
+          // Check if the updated pet is now equipped
+          if (payload.new.is_equipped) {
+            console.log('🔄 Equipped pet changed to:', payload.new.pet_name);
+            setPet(payload.new);
+            await savePetData(payload.new);
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log('🔌 Pet subscription status:', status);
+      });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [couple?.id]);
 
   // Add profile button to header
   useLayoutEffect(() => {
@@ -153,6 +272,10 @@ export default function PetScreen() {
       await checkStreak(streak);
       setStreakData(streak);
 
+      // Load owned pets
+      const owned = await getOwnedPets();
+      setOwnedPets(owned || []);
+
       // Try to load from local storage first
       const localCouple = await getCoupleData();
       const localPet = await getPetData();
@@ -200,16 +323,34 @@ export default function PetScreen() {
             console.error('Error saving couple locally:', err);
           }
 
-          // Query pet data
+          // Fetch partner email
+          try {
+            const partnerId = coupleData.auth_user1_id === user.id
+              ? coupleData.auth_user2_id
+              : coupleData.auth_user1_id;
+
+            if (partnerId) {
+              const { data: partnerData } = await supabase.auth.admin.getUserById(partnerId);
+              if (partnerData?.user?.email) {
+                setPartnerEmail(partnerData.user.email);
+              }
+            }
+          } catch (err) {
+            // Partner email fetch is not critical, just log the error
+            console.log('Could not fetch partner email:', err.message);
+          }
+
+          // Query equipped pet data
           try {
             const { data, error: petError } = await supabase
               .from('pets')
               .select('*')
               .eq('couple_id', coupleData.id)
+              .eq('is_equipped', true)
               .maybeSingle();
 
             console.log('Pet query result:', {
-              data: data ? { id: data.id, name: data.pet_name } : null,
+              data: data ? { id: data.id, name: data.pet_name, type: data.pet_type } : null,
               petError: petError?.message
             });
 
@@ -335,37 +476,144 @@ export default function PetScreen() {
   }
 
   async function joinCouple() {
-    if (!inviteCode.trim()) {
-      Alert.alert('Error', 'Please enter an invite code');
+    const trimmedCode = inviteCode.trim().toUpperCase();
+
+    if (!trimmedCode) {
+      showAlert('Missing Code', 'Please enter an invite code to join a couple.');
       return;
     }
 
     if (!isSupabaseConfigured()) {
-      Alert.alert(
+      showAlert(
         'Configuration Error',
         'App is not properly configured. Please check your setup.'
       );
       return;
     }
 
+    console.log('🔍 Attempting to join couple with code:', trimmedCode);
+
     try {
+      // First, check if user is already in ANY couples (could be multiple from testing)
+      const { data: existingCouples, error: existingError } = await supabase
+        .from('couples')
+        .select('*')
+        .or(`auth_user1_id.eq.${userId},auth_user2_id.eq.${userId}`)
+        .order('created_at', { ascending: false });
+
+      if (existingError) {
+        console.error('Error checking existing couples:', existingError);
+      } else if (existingCouples && existingCouples.length > 0) {
+        console.log(`⚠️ User is in ${existingCouples.length} couple(s)`);
+
+        // Check each couple for a pet
+        let hasActiveCoupleWithPet = false;
+        const couplesToCleanup = [];
+
+        for (const couple of existingCouples) {
+          const { data: pet } = await supabase
+            .from('pets')
+            .select('*')
+            .eq('couple_id', couple.id)
+            .maybeSingle();
+
+          if (pet) {
+            // This couple has a pet - it's active
+            hasActiveCoupleWithPet = true;
+            console.log(`✅ Found active couple with pet: ${couple.id}`);
+            break;
+          } else {
+            // No pet - mark for cleanup
+            couplesToCleanup.push(couple);
+          }
+        }
+
+        if (hasActiveCoupleWithPet) {
+          // User has at least one active couple with a pet
+          console.log('🚫 Blocking join - user has active couple with pet');
+          setInviteCode(''); // Clear the input
+          showAlert(
+            'Already Paired',
+            'You are already in an active couple! Please leave your current couple before joining a new one.\n\nGo to Profile > Leave Couple to exit your current pairing.'
+          );
+          return;
+        }
+
+        // Clean up ALL incomplete couples
+        if (couplesToCleanup.length > 0) {
+          console.log(`🧹 Auto-cleaning ${couplesToCleanup.length} incomplete couple(s)...`);
+
+          for (const couple of couplesToCleanup) {
+            if (couple.auth_user1_id === userId) {
+              // User is creator - delete the couple
+              await supabase.from('couples').delete().eq('id', couple.id);
+              console.log(`  ✅ Deleted couple: ${couple.id}`);
+            } else {
+              // User is joiner - remove themselves
+              await supabase.from('couples').update({ auth_user2_id: null }).eq('id', couple.id);
+              console.log(`  ✅ Left couple: ${couple.id}`);
+            }
+          }
+
+          // Clear local data
+          await saveCoupleData(null);
+          await savePetData(null);
+
+          console.log('✅ All incomplete couples cleaned up, proceeding with join...');
+        }
+      }
+
+      // Try to find the couple with this invite code
       const { data: coupleData, error: fetchError } = await supabase
         .from('couples')
         .select('*')
-        .eq('invite_code', inviteCode.toUpperCase())
-        .single();
+        .eq('invite_code', trimmedCode)
+        .maybeSingle();
 
-      if (fetchError || !coupleData) {
-        console.error('Error fetching couple:', fetchError);
-        Alert.alert('Invalid Code', 'The invite code you entered was not found. Please check and try again.');
+      console.log('Couple lookup result:', {
+        found: !!coupleData,
+        error: fetchError?.message,
+        code: trimmedCode
+      });
+
+      if (fetchError) {
+        console.error('Database error fetching couple:', fetchError);
+        showAlert('Error', 'Unable to search for invite code. Please check your internet connection and try again.');
         return;
       }
 
+      if (!coupleData) {
+        console.log('❌ No couple found with code:', trimmedCode);
+        showAlert(
+          'Invalid Code',
+          `The invite code "${trimmedCode}" was not found.\n\nPlease check that you entered it correctly and try again.`
+        );
+        return;
+      }
+
+      // Check if couple is already full
       if (coupleData.auth_user2_id) {
-        Alert.alert('Already Paired', 'This couple is already complete. Please create a new couple or ask for a different code.');
+        console.log('⚠️ Couple is already full');
+        showAlert(
+          'Couple Full',
+          'This couple already has 2 people paired together.\n\nOnly 2 people can share a couple. Please ask for a different invite code or create your own couple.'
+        );
         return;
       }
 
+      // Check if user is trying to join their own couple
+      if (coupleData.auth_user1_id === userId) {
+        console.log('⚠️ User trying to join their own couple');
+        showAlert(
+          'Your Own Code',
+          'This is your own invite code! Share this code with your partner so they can join you.'
+        );
+        return;
+      }
+
+      console.log('✅ Valid couple found, joining...');
+
+      // Join the couple
       const { error: updateError } = await supabase
         .from('couples')
         .update({ auth_user2_id: userId })
@@ -373,9 +621,11 @@ export default function PetScreen() {
 
       if (updateError) {
         console.error('Error joining couple:', updateError);
-        Alert.alert('Error', 'Could not join couple. Please try again.\n\nError: ' + updateError.message);
+        showAlert('Error', 'Could not join couple. Please try again.\n\nError: ' + updateError.message);
         return;
       }
+
+      console.log('✅ Successfully joined couple!');
 
       const updatedCouple = { ...coupleData, auth_user2_id: userId };
       setCouple(updatedCouple);
@@ -387,21 +637,194 @@ export default function PetScreen() {
         .from('pets')
         .select('*')
         .eq('couple_id', updatedCouple.id)
-        .single();
+        .maybeSingle();
 
       if (existingPet) {
         // Couple already has a pet, load it
         setPet(existingPet);
         await savePetData(existingPet);
-        showAlert('Success', 'Joined couple! Welcome back!');
+        showAlert('Success', 'Joined couple! Welcome! 💕');
       } else {
         // No pet yet, show selection
         setShowPetSelectModal(true);
         showAlert('Success', 'Joined couple! Now choose your pet together.');
       }
+
+      setInviteCode('');
     } catch (err) {
       console.error('Unexpected error joining couple:', err);
-      Alert.alert('Error', 'An unexpected error occurred. Please try again.\n\nError: ' + err.message);
+      showAlert('Error', 'An unexpected error occurred. Please try again.\n\nError: ' + err.message);
+    }
+  }
+
+  async function loadAllPets() {
+    if (!couple) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('couple_id', couple.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading all pets:', error);
+        return;
+      }
+
+      setAllPets(data || []);
+    } catch (err) {
+      console.error('Exception loading all pets:', err);
+    }
+  }
+
+  async function switchToPet(petId) {
+    if (!couple) return;
+
+    try {
+      // Unequip all pets
+      await supabase
+        .from('pets')
+        .update({ is_equipped: false })
+        .eq('couple_id', couple.id);
+
+      // Equip the selected pet
+      const { data, error } = await supabase
+        .from('pets')
+        .update({ is_equipped: true })
+        .eq('id', petId)
+        .select()
+        .single();
+
+      if (error) {
+        showAlert('Error', 'Failed to switch pet. Please try again.');
+        return;
+      }
+
+      console.log('✅ Switched to pet:', data.pet_name, 'Happiness:', data.happiness);
+
+      // Update local state and UI
+      setPet(data);
+      await savePetData(data);
+      setShowChangePetModal(false);
+
+      // Force UI refresh by reloading couple data
+      setTimeout(() => {
+        loadCoupleData();
+      }, 100);
+
+      showAlert('Success!', `Switched to ${data.pet_name}!`);
+    } catch (err) {
+      console.error('Error switching pet:', err);
+      showAlert('Error', 'An unexpected error occurred.');
+    }
+  }
+
+  async function leaveCouple() {
+    if (!couple || !userId) return;
+
+    if (!isSupabaseConfigured()) {
+      showAlert(
+        'Configuration Error',
+        'App is not properly configured. Please check your setup.'
+      );
+      return;
+    }
+
+    try {
+      const isUser1 = couple.auth_user1_id === userId;
+      const isUser2 = couple.auth_user2_id === userId;
+
+      console.log('🚪 Leaving couple:', { isUser1, isUser2, coupleId: couple.id });
+
+      if (isUser2) {
+        // User 2 leaving - just remove them from the couple
+        console.log('Setting auth_user2_id to null...');
+        const { error, data } = await supabase
+          .from('couples')
+          .update({ auth_user2_id: null })
+          .eq('id', couple.id)
+          .select();
+
+        console.log('Update result:', { error, data });
+
+        if (error) {
+          console.error('Error leaving couple:', error);
+          showAlert('Error', 'Failed to leave couple. Please try again.');
+          return;
+        }
+      } else if (isUser1) {
+        // User 1 leaving - delete the entire couple and associated data
+        console.log('Deleting couple and all associated data...');
+
+        // Delete pet first (foreign key constraint)
+        if (pet) {
+          const { error: petError } = await supabase.from('pets').delete().eq('couple_id', couple.id);
+          console.log('Pet delete result:', petError);
+        }
+
+        // Delete games
+        const { error: gamesError } = await supabase.from('games').delete().eq('couple_id', couple.id);
+        console.log('Games delete result:', gamesError);
+
+        // Delete notes
+        const { error: notesError } = await supabase.from('notes').delete().eq('couple_id', couple.id);
+        console.log('Notes delete result:', notesError);
+
+        // Delete memories
+        const { error: memoriesError } = await supabase.from('memories').delete().eq('couple_id', couple.id);
+        console.log('Memories delete result:', memoriesError);
+
+        // Delete whiteboard drawings
+        const { error: drawingsError } = await supabase.from('whiteboard_drawings').delete().eq('couple_id', couple.id);
+        console.log('Drawings delete result:', drawingsError);
+
+        // Finally delete the couple
+        const { error, data } = await supabase
+          .from('couples')
+          .delete()
+          .eq('id', couple.id)
+          .select();
+
+        console.log('Couple delete result:', { error, data });
+
+        if (error) {
+          console.error('Error deleting couple:', error);
+          showAlert('Error', 'Failed to leave couple. Please try again.');
+          return;
+        }
+      }
+
+      console.log('✅ Successfully left couple in database');
+
+      // Clear only couple-related local data, not auth data
+      await saveCoupleData(null);
+      await savePetData(null);
+      await saveStreakData({ currentStreak: 0, lastActivityDate: null, streakRepairs: 0 });
+      await saveCurrency(100); // Reset to default currency
+
+      // Reset state immediately
+      setCouple(null);
+      setPet(null);
+      setPartnerEmail('');
+      setShowLeaveCoupleModal(false);
+      setShowProfileModal(false);
+      setLoading(false);
+
+      console.log('✅ State reset complete');
+
+      // Show pairing modal so user can create/join a new couple
+      setTimeout(() => {
+        setShowPairModal(true);
+      }, 500);
+
+      showAlert('Success', 'You have left the couple. You can now create or join a new couple.');
+
+      // Don't reload - user already has no couple
+      setError(null);
+    } catch (error) {
+      console.error('Error leaving couple:', error);
+      showAlert('Error', 'An unexpected error occurred. Please try again.');
     }
   }
 
@@ -428,6 +851,21 @@ export default function PetScreen() {
     }
 
     try {
+      console.log('🔄 Creating new pet:', selectedPetType, 'named:', finalPetName);
+
+      // First, unequip all existing pets for this couple
+      const { error: unequipError } = await supabase
+        .from('pets')
+        .update({ is_equipped: false })
+        .eq('couple_id', couple.id);
+
+      if (unequipError) {
+        console.error('Error unequipping pets:', unequipError);
+      } else {
+        console.log('✅ Unequipped all existing pets');
+      }
+
+      // Now create the new pet as equipped
       const { data, error } = await supabase
         .from('pets')
         .insert({
@@ -436,6 +874,7 @@ export default function PetScreen() {
           pet_name: finalPetName,
           happiness: 50,
           last_decay: new Date().toISOString(),
+          is_equipped: true,
         })
         .select()
         .single();
@@ -449,16 +888,26 @@ export default function PetScreen() {
         return;
       }
 
+      console.log('✅ Created new pet:', data.pet_name, 'Type:', data.pet_type, 'ID:', data.id);
+
+      // Update local state
       setPet(data);
       await savePetData(data);
       setShowPetNameModal(false);
       setPetName('');
 
-      // Add to owned pets (first pet is free)
+      // Add to owned pets
       const owned = await getOwnedPets();
       if (!owned.includes(selectedPetType)) {
         await saveOwnedPets([...owned, selectedPetType]);
+        setOwnedPets([...owned, selectedPetType]);
       }
+
+      // Force UI refresh
+      console.log('🔄 Forcing UI refresh...');
+      setTimeout(() => {
+        loadCoupleData();
+      }, 200);
     } catch (err) {
       console.error('Unexpected error creating pet:', err);
       Alert.alert(
@@ -856,20 +1305,50 @@ export default function PetScreen() {
 
   if (error) {
     return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.errorTitle}>Oops! Something went wrong</Text>
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity
-          style={styles.retryButton}
-          onPress={() => {
-            setError(null);
-            setLoading(true);
-            loadUserData();
-          }}
-        >
-          <Text style={styles.retryButtonText}>Retry</Text>
-        </TouchableOpacity>
-      </View>
+      <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+        <View style={styles.centerContainer}>
+          <Text style={styles.errorTitle}>Oops! Something went wrong</Text>
+          <Text style={styles.errorText}>{error}</Text>
+
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={() => {
+              setError(null);
+              setLoading(true);
+              loadUserData();
+            }}
+          >
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.retryButton, { backgroundColor: '#FFA07A', marginTop: 10 }]}
+            onPress={async () => {
+              // Clear couple/pet data but keep auth
+              await saveCoupleData(null);
+              await savePetData(null);
+              await saveStreakData({ currentStreak: 0, lastActivityDate: null, streakRepairs: 0 });
+              setError(null);
+              setCouple(null);
+              setPet(null);
+              setLoading(true);
+              loadUserData();
+            }}
+          >
+            <Text style={styles.retryButtonText}>Clear Data & Retry</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.retryButton, { backgroundColor: '#FF6347', marginTop: 10 }]}
+            onPress={async () => {
+              setError(null);
+              await signOut();
+            }}
+          >
+            <Text style={styles.retryButtonText}>Logout</Text>
+          </TouchableOpacity>
+        </View>
+      </LinearGradient>
     );
   }
 
@@ -928,7 +1407,15 @@ export default function PetScreen() {
             </TouchableOpacity>
 
             <View style={styles.happinessContainer}>
-              <Text style={styles.happinessLabel}>Happiness</Text>
+              <View style={styles.happinessLabelContainer}>
+                <Text style={styles.happinessLabel}>Happiness</Text>
+                <TouchableOpacity
+                  onPress={() => setShowHappinessInfoModal(true)}
+                  style={styles.happinessInfoIcon}
+                >
+                  <Ionicons name="information-circle-outline" size={18} color="#FF69B4" />
+                </TouchableOpacity>
+              </View>
               <View style={styles.happinessBarContainer}>
                 <View
                   style={[
@@ -944,14 +1431,59 @@ export default function PetScreen() {
               <Text style={styles.feedButtonText}>Feed Pet 🍎 (+10)</Text>
             </TouchableOpacity>
 
-            <View style={styles.infoBox}>
-              <Text style={styles.infoText}>
-                💡 Play games, share notes, and add memories to keep your pet happy!
-              </Text>
-              <Text style={styles.infoText}>
-                ⚠️ Happiness decreases by 2 points every hour.
-              </Text>
-            </View>
+            {pendingGames.length > 0 && (
+              <View style={styles.miniGamesContainer}>
+                <Text style={styles.miniGamesHeader}>Your Turn</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.miniGamesScroll}
+                >
+                  {pendingGames.map((game, index) => {
+                    const gameInfo = {
+                      tictactoe: { name: 'Tic Tac Toe', icon: '⭕', emoji: '❌' },
+                      connectfour: { name: 'Connect Four', icon: '🔴', emoji: '🟡' },
+                      reversi: { name: 'Reversi', icon: '⚫', emoji: '⚪' },
+                      dotsandboxes: { name: 'Dots & Boxes', icon: '📦', emoji: '✏️' },
+                      whiteboard: { name: 'Whiteboard', icon: '🎨', emoji: '✏️' }
+                    };
+                    const info = gameInfo[game.game_type] || { name: game.game_type, icon: '🎮', emoji: '🎯' };
+
+                    return (
+                      <TouchableOpacity
+                        key={index}
+                        style={styles.miniGameCard}
+                        onPress={() => {
+                          switch (game.game_type) {
+                            case 'tictactoe':
+                              setShowTicTacToe(true);
+                              break;
+                            case 'connectfour':
+                              setShowConnectFour(true);
+                              break;
+                            case 'reversi':
+                              setShowReversi(true);
+                              break;
+                            case 'dotsandboxes':
+                              setShowDotsAndBoxes(true);
+                              break;
+                            case 'whiteboard':
+                              setShowWhiteboard(true);
+                              break;
+                          }
+                        }}
+                      >
+                        <View style={styles.miniGameIcons}>
+                          <Text style={styles.miniGameIcon}>{info.icon}</Text>
+                          <Text style={styles.miniGameIconSecondary}>{info.emoji}</Text>
+                        </View>
+                        <Text style={styles.miniGameName}>{info.name}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
 
             {couple && (
               <View style={styles.coupleInfo}>
@@ -1020,42 +1552,87 @@ export default function PetScreen() {
                 Pick a pet to take care of together 💕
               </Text>
               <Text style={styles.petSelectionNote}>
-                Your first pet is free! ✨
+                Free starter pets available! ✨
+              </Text>
+              <Text style={styles.petSelectionNote}>
+                Visit the Shop to unlock more pets with coins! 🛒
               </Text>
 
               <View style={styles.petGrid}>
-                {Object.entries(PETS).map(([type, petData]) => (
-                  <TouchableOpacity
-                    key={type}
-                    style={styles.petCard}
-                    onPress={() => handlePetTypeSelect(type)}
-                    activeOpacity={0.7}
-                  >
-                    <View style={styles.petCardContent}>
-                      {petData.image ? (
-                        <Image
-                          source={petData.image}
-                          style={styles.petCardImage}
-                          resizeMode="contain"
-                        />
-                      ) : (
-                        <Text style={styles.petCardEmoji}>{petData.emoji}</Text>
-                      )}
-                      <Text style={styles.petCardTitle}>{petData.name}</Text>
-                      <Text style={styles.petCardDescription}>
-                        {type === 'parrot' && 'Colorful and chatty friend'}
-                        {type === 'penguin' && 'Adorable waddling buddy'}
-                        {type === 'dog' && 'Loyal and playful pal'}
-                        {type === 'cat' && 'Independent and affectionate'}
-                        {type === 'bunny' && 'Cute and gentle hopper'}
-                        {type === 'panda' && 'Cuddly bamboo lover'}
-                        {type === 'fox' && 'Clever and spirited'}
-                        {type === 'turtle' && 'Calm and wise companion'}
-                        {type === 'polar_bear' && 'Fluffy arctic friend'}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
+                {Object.entries(PETS).map(([type, petData]) => {
+                  // Free starter pets (parrot and penguin)
+                  const freePets = ['parrot', 'penguin'];
+                  const isFree = freePets.includes(type);
+                  const isOwned = ownedPets.includes(type);
+                  const isAvailable = isFree || isOwned;
+
+                  return (
+                    <TouchableOpacity
+                      key={type}
+                      style={[
+                        styles.petCard,
+                        !isAvailable && styles.petCardLocked
+                      ]}
+                      onPress={() => isAvailable ? handlePetTypeSelect(type) : null}
+                      activeOpacity={isAvailable ? 0.7 : 1}
+                      disabled={!isAvailable}
+                    >
+                      <View style={styles.petCardContent}>
+                        {!isAvailable && (
+                          <View style={styles.lockedOverlay}>
+                            <Text style={styles.lockedIcon}>🔒</Text>
+                          </View>
+                        )}
+                        {petData.image ? (
+                          <Image
+                            source={petData.image}
+                            style={[
+                              styles.petCardImage,
+                              !isAvailable && styles.petCardImageLocked
+                            ]}
+                            resizeMode="contain"
+                          />
+                        ) : (
+                          <Text style={[
+                            styles.petCardEmoji,
+                            !isAvailable && styles.petCardEmojiLocked
+                          ]}>
+                            {petData.emoji}
+                          </Text>
+                        )}
+                        <Text style={[
+                          styles.petCardTitle,
+                          !isAvailable && styles.petCardTitleLocked
+                        ]}>
+                          {petData.name}
+                        </Text>
+                        {isFree && (
+                          <Text style={styles.freeBadge}>FREE</Text>
+                        )}
+                        {!isAvailable && (
+                          <Text style={styles.visitShopText}>Visit Shop</Text>
+                        )}
+                        <Text
+                          style={[
+                            styles.petCardDescription,
+                            !isAvailable && styles.petCardDescriptionLocked
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {type === 'parrot' && 'Colorful & chatty'}
+                          {type === 'penguin' && 'Adorable buddy'}
+                          {type === 'dog' && 'Loyal & playful'}
+                          {type === 'cat' && 'Independent pal'}
+                          {type === 'bunny' && 'Cute hopper'}
+                          {type === 'panda' && 'Bamboo lover'}
+                          {type === 'fox' && 'Clever & spirited'}
+                          {type === 'turtle' && 'Wise companion'}
+                          {type === 'polar_bear' && 'Arctic friend'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             </View>
           </ScrollView>
@@ -1309,6 +1886,36 @@ export default function PetScreen() {
         </View>
       </Modal>
 
+      {/* Happiness Info Modal */}
+      <Modal visible={showHappinessInfoModal} animationType="fade" transparent>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Happiness Tips</Text>
+              <TouchableOpacity onPress={() => setShowHappinessInfoModal(false)}>
+                <Text style={styles.closeButton}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.infoBox}>
+              <Text style={styles.infoText}>
+                💡 Play games, share notes, and add memories to keep your pet happy!
+              </Text>
+              <Text style={styles.infoText}>
+                ⚠️ Happiness decreases by 2 points every hour.
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.closeModalButton}
+              onPress={() => setShowHappinessInfoModal(false)}
+            >
+              <Text style={styles.buttonText}>Got it!</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Profile Modal */}
       <Modal visible={showProfileModal} animationType="slide" transparent>
         <View style={styles.modalContainer}>
@@ -1330,6 +1937,59 @@ export default function PetScreen() {
                 <Text style={styles.profileLabel}>Coins:</Text>
                 <Text style={styles.profileValue}>💰 {currency}</Text>
               </View>
+
+              {couple && (
+                <>
+                  <View style={styles.profileDivider} />
+                  <Text style={styles.profileSectionTitle}>Couple Info</Text>
+
+                  {partnerEmail ? (
+                    <View style={styles.profileRow}>
+                      <Text style={styles.profileLabel}>Partner:</Text>
+                      <Text style={styles.profileValue}>{partnerEmail}</Text>
+                    </View>
+                  ) : (
+                    <>
+                      <View style={styles.profileRow}>
+                        <Text style={styles.profileLabel}>Invite Code:</Text>
+                        <Text style={styles.profileValue}>{couple.invite_code}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.copyCodeButton}
+                        onPress={async () => {
+                          await Clipboard.setStringAsync(couple.invite_code);
+                          showAlert('Copied!', 'Invite code copied to clipboard');
+                        }}
+                      >
+                        <Text style={styles.copyCodeButtonText}>📋 Copy Invite Code</Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+
+                  {pet && (
+                    <TouchableOpacity
+                      style={styles.changePetButton}
+                      onPress={() => {
+                        loadAllPets();
+                        setShowProfileModal(false);
+                        setShowChangePetModal(true);
+                      }}
+                    >
+                      <Text style={styles.changePetButtonText}>🔄 Change Pet</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    style={styles.leaveCoupleButton}
+                    onPress={() => {
+                      setShowProfileModal(false);
+                      setShowLeaveCoupleModal(true);
+                    }}
+                  >
+                    <Text style={styles.leaveCoupleButtonText}>Leave Couple</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
 
             <TouchableOpacity
@@ -1350,6 +2010,184 @@ export default function PetScreen() {
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* Leave Couple Confirmation Modal */}
+      <Modal visible={showLeaveCoupleModal} animationType="slide" transparent>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Leave Couple</Text>
+            <Text style={styles.warningText}>
+              {couple?.auth_user1_id === userId
+                ? '⚠️ Warning: As the couple creator, leaving will delete all couple data including the pet, activities, notes, and memories. This action cannot be undone!'
+                : '⚠️ Are you sure you want to leave this couple? You can join a new one afterwards.'}
+            </Text>
+
+            <TouchableOpacity
+              style={styles.confirmLeaveButton}
+              onPress={leaveCouple}
+            >
+              <Text style={styles.confirmLeaveButtonText}>Yes, Leave Couple</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.closeModalButton}
+              onPress={() => setShowLeaveCoupleModal(false)}
+            >
+              <Text style={styles.buttonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Change Pet Modal */}
+      <Modal visible={showChangePetModal} animationType="slide" transparent>
+        <View style={styles.modalContainer}>
+          <ScrollView contentContainerStyle={styles.scrollModalContent}>
+            <Text style={styles.modalTitle}>Change Pet</Text>
+            <Text style={styles.modalSubtitle}>
+              Select a pet to switch to. Each pet keeps their own name and happiness!
+            </Text>
+
+            {allPets.length === 0 ? (
+              <Text style={styles.noPetsText}>Loading your pets...</Text>
+            ) : (
+              <View style={styles.petsGrid}>
+                {allPets.map((petItem) => {
+                  const petData = PETS[petItem.pet_type];
+                  const isCurrentPet = pet?.id === petItem.id;
+
+                  return (
+                    <TouchableOpacity
+                      key={petItem.id}
+                      style={[
+                        styles.changePetCard,
+                        isCurrentPet && styles.changePetCardActive
+                      ]}
+                      onPress={() => !isCurrentPet && switchToPet(petItem.id)}
+                      disabled={isCurrentPet}
+                    >
+                      {petData.image ? (
+                        <Image
+                          source={petData.image}
+                          style={styles.changePetImage}
+                          resizeMode="contain"
+                        />
+                      ) : (
+                        <Text style={styles.changePetEmoji}>{petData.emoji}</Text>
+                      )}
+                      <Text style={styles.changePetName}>{petItem.pet_name}</Text>
+                      <Text style={styles.changePetType}>{petData.name}</Text>
+                      <Text style={styles.changePetHappiness}>❤️ {petItem.happiness}%</Text>
+                      {isCurrentPet && (
+                        <View style={styles.equippedBadge}>
+                          <Text style={styles.equippedBadgeText}>✓ Equipped</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={styles.closeModalButton}
+              onPress={() => setShowChangePetModal(false)}
+            >
+              <Text style={styles.buttonText}>Close</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Game Modals */}
+      <Modal visible={showTicTacToe} animationType="slide" transparent>
+        <TicTacToeGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowTicTacToe(false)}
+          onTurnComplete={async () => {
+            const games = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(games || []);
+          }}
+          onComplete={async (won) => {
+            setShowTicTacToe(false);
+            if (won) {
+              showAlert('You won!', 'Great job! Your pet gained +5 happiness');
+              await feedPet(5);
+            }
+          }}
+        />
+      </Modal>
+
+      <Modal visible={showConnectFour} animationType="slide" transparent>
+        <ConnectFourGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowConnectFour(false)}
+          onTurnComplete={async () => {
+            const games = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(games || []);
+          }}
+          onComplete={async (won) => {
+            setShowConnectFour(false);
+            if (won) {
+              showAlert('You won!', 'Great job! Your pet gained +5 happiness');
+              await feedPet(5);
+            }
+          }}
+        />
+      </Modal>
+
+      <Modal visible={showReversi} animationType="slide" transparent>
+        <ReversiGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowReversi(false)}
+          onTurnComplete={async () => {
+            const games = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(games || []);
+          }}
+          onComplete={async (won) => {
+            setShowReversi(false);
+            if (won) {
+              showAlert('You won!', 'Great job! Your pet gained +5 happiness');
+              await feedPet(5);
+            }
+          }}
+        />
+      </Modal>
+
+      <Modal visible={showDotsAndBoxes} animationType="slide" transparent>
+        <DotsAndBoxesGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowDotsAndBoxes(false)}
+          onTurnComplete={async () => {
+            const games = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(games || []);
+          }}
+          onComplete={async (won) => {
+            setShowDotsAndBoxes(false);
+            if (won) {
+              showAlert('You won!', 'Great job! Your pet gained +5 happiness');
+              await feedPet(5);
+            }
+          }}
+        />
+      </Modal>
+
+      <Modal visible={showWhiteboard} animationType="slide" transparent>
+        <WhiteboardGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowWhiteboard(false)}
+          onComplete={async () => {
+            setShowWhiteboard(false);
+            showAlert('Saved!', 'Your drawing has been saved');
+            await feedPet(5);
+          }}
+        />
       </Modal>
     </LinearGradient>
   );
@@ -1471,12 +2309,21 @@ const styles = StyleSheet.create({
     width: '100%',
     marginBottom: 15,
   },
+  happinessLabelContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
   happinessLabel: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#FF1493',
     textAlign: 'center',
-    marginBottom: 10,
+  },
+  happinessInfoIcon: {
+    marginLeft: 8,
+    padding: 2,
   },
   happinessBarContainer: {
     height: 30,
@@ -1512,6 +2359,53 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  miniGamesContainer: {
+    marginBottom: 12,
+    width: '100%',
+  },
+  miniGamesHeader: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FF69B4',
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  miniGamesScroll: {
+    paddingHorizontal: 2,
+  },
+  miniGameCard: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 12,
+    marginRight: 10,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFE5EC',
+    minWidth: 90,
+    shadowColor: '#FF1493',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  miniGameIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  miniGameIcon: {
+    fontSize: 24,
+    marginRight: 2,
+  },
+  miniGameIconSecondary: {
+    fontSize: 20,
+  },
+  miniGameName: {
+    fontSize: 11,
+    color: '#FF1493',
+    fontWeight: '600',
+    textAlign: 'center',
   },
   infoBox: {
     backgroundColor: 'white',
@@ -1667,7 +2561,7 @@ const styles = StyleSheet.create({
   petCardContent: {
     backgroundColor: 'white',
     borderRadius: 20,
-    padding: 15,
+    padding: 12,
     alignItems: 'center',
     borderWidth: 3,
     borderColor: '#FFE5EC',
@@ -1676,6 +2570,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 5,
+    minHeight: 180,
   },
   petCardImage: {
     width: 90,
@@ -1693,10 +2588,55 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   petCardDescription: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#FF69B4',
     textAlign: 'center',
-    lineHeight: 16,
+    lineHeight: 14,
+    marginTop: 3,
+  },
+  petCardLocked: {
+    opacity: 0.6,
+  },
+  lockedOverlay: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    zIndex: 10,
+  },
+  lockedIcon: {
+    fontSize: 24,
+  },
+  petCardImageLocked: {
+    opacity: 0.4,
+  },
+  petCardEmojiLocked: {
+    opacity: 0.4,
+  },
+  petCardTitleLocked: {
+    color: '#999',
+  },
+  petCardDescriptionLocked: {
+    color: '#BBB',
+  },
+  freeBadge: {
+    backgroundColor: '#32CD32',
+    color: 'white',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginTop: 5,
+  },
+  visitShopText: {
+    backgroundColor: '#FFB6D9',
+    color: '#FF1493',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    fontSize: 11,
+    fontWeight: 'bold',
+    marginTop: 5,
   },
   petNameDisplay: {
     fontSize: 32,
@@ -2099,6 +3039,63 @@ const styles = StyleSheet.create({
     color: '#333',
     maxWidth: '60%',
   },
+  profileDivider: {
+    height: 1,
+    backgroundColor: '#FFE5EC',
+    marginVertical: 15,
+  },
+  profileSectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#FF1493',
+    marginBottom: 10,
+  },
+  copyCodeButton: {
+    backgroundColor: '#FFB6D9',
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 10,
+  },
+  copyCodeButtonText: {
+    color: '#FF1493',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  leaveCoupleButton: {
+    backgroundColor: '#FFA07A',
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 15,
+  },
+  leaveCoupleButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  warningText: {
+    fontSize: 14,
+    color: '#FF6347',
+    textAlign: 'center',
+    marginVertical: 20,
+    paddingHorizontal: 10,
+    lineHeight: 20,
+  },
+  confirmLeaveButton: {
+    backgroundColor: '#FF6347',
+    paddingVertical: 15,
+    borderRadius: 15,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  confirmLeaveButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
   logoutButton: {
     backgroundColor: '#FF1493',
     paddingVertical: 15,
@@ -2110,5 +3107,97 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  changePetButton: {
+    backgroundColor: '#9370DB',
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  changePetButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  scrollModalContent: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 20,
+    marginHorizontal: 20,
+    marginVertical: 60,
+    maxHeight: '85%',
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  noPetsText: {
+    fontSize: 16,
+    color: '#999',
+    textAlign: 'center',
+    marginVertical: 30,
+  },
+  petsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  changePetCard: {
+    width: '48%',
+    backgroundColor: '#FFF0F5',
+    borderRadius: 15,
+    padding: 15,
+    marginBottom: 15,
+    borderWidth: 2,
+    borderColor: '#FFE5EC',
+    alignItems: 'center',
+  },
+  changePetCardActive: {
+    borderColor: '#FF1493',
+    backgroundColor: '#FFE5EC',
+  },
+  changePetImage: {
+    width: 80,
+    height: 80,
+    marginBottom: 10,
+  },
+  changePetEmoji: {
+    fontSize: 60,
+    marginBottom: 10,
+  },
+  changePetName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FF1493',
+    textAlign: 'center',
+    marginBottom: 5,
+  },
+  changePetType: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 5,
+  },
+  changePetHappiness: {
+    fontSize: 14,
+    color: '#FF69B4',
+    textAlign: 'center',
+  },
+  equippedBadge: {
+    backgroundColor: '#32CD32',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    marginTop: 10,
+  },
+  equippedBadgeText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
   },
 });

@@ -1,6 +1,15 @@
 import React from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GalleryWidget } from './GalleryWidget';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
+
+// Get Supabase client if configured
+function getSupabase() {
+  if (isSupabaseConfigured()) {
+    return supabase;
+  }
+  return null;
+}
 
 async function getWidgetDrawing() {
   try {
@@ -13,19 +22,57 @@ async function getWidgetDrawing() {
       return null;
     }
 
-    // Get all drawings
+    // Try to get from cache first
     const drawingsJson = await AsyncStorage.getItem('savedDrawings');
-    if (!drawingsJson) {
-      console.log('No saved drawings found');
-      return null;
+    let selectedDrawing = null;
+
+    if (drawingsJson) {
+      const drawings = JSON.parse(drawingsJson);
+      selectedDrawing = drawings.find(d => d.id === widgetDrawingId);
+      console.log('Found drawing in cache:', !!selectedDrawing);
     }
 
-    const drawings = JSON.parse(drawingsJson);
-    console.log('Found drawings:', drawings.length);
+    // If not in cache or we need fresh data, fetch from Supabase
+    const supabaseClient = getSupabase();
+    if (supabaseClient && !selectedDrawing) {
+      console.log('Fetching drawing from Supabase...');
 
-    // Find the selected drawing
-    const selectedDrawing = drawings.find(d => d.id === widgetDrawingId);
-    console.log('Selected drawing:', selectedDrawing ? 'found' : 'not found');
+      // Get couple ID from storage
+      const coupleDataJson = await AsyncStorage.getItem('coupleData');
+      if (coupleDataJson) {
+        const coupleData = JSON.parse(coupleDataJson);
+
+        // Fetch all drawings for this couple
+        const { data: drawings, error } = await supabaseClient
+          .from('whiteboard_drawings')
+          .select('*')
+          .eq('couple_id', coupleData.id)
+          .order('created_at', { ascending: false });
+
+        if (!error && drawings) {
+          console.log('Fetched drawings from Supabase:', drawings.length);
+
+          // Convert to widget format
+          const formattedDrawings = drawings.map(drawing => ({
+            id: drawing.id,
+            publicUrl: drawing.image_url,
+            image: null,
+            canvasWidth: drawing.canvas_width,
+            canvasHeight: drawing.canvas_height,
+            backgroundColor: drawing.background_color || 'white',
+            createdAt: drawing.created_at,
+          }));
+
+          // Update cache
+          await AsyncStorage.setItem('savedDrawings', JSON.stringify(formattedDrawings));
+
+          // Find the selected drawing
+          selectedDrawing = formattedDrawings.find(d => d.id === widgetDrawingId);
+          console.log('Found drawing in Supabase:', !!selectedDrawing);
+        }
+      }
+    }
+
     return selectedDrawing || null;
   } catch (error) {
     console.error('Error loading widget drawing:', error);

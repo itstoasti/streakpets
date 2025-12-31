@@ -1,8 +1,17 @@
-import { registerWidgetTaskHandler } from 'react-native-android-widget';
-import { widgetTaskHandler } from './widgetTaskHandler';
+import { Platform } from 'react-native';
 
-// Register the widget task handler
-registerWidgetTaskHandler(widgetTaskHandler);
+// Only register widget on Android
+if (Platform.OS === 'android') {
+  try {
+    const { registerWidgetTaskHandler } = require('react-native-android-widget');
+    const { widgetTaskHandler } = require('./widgetTaskHandler');
+
+    // Register the widget task handler
+    registerWidgetTaskHandler(widgetTaskHandler);
+  } catch (error) {
+    console.warn('Failed to register widget task handler:', error);
+  }
+}
 
 export const widgetConfig = {
   widgets: [
