@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,13 +9,21 @@ import {
   TextInput,
   Modal,
   Image,
+  ActivityIndicator,
+  Share,
 } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { getCoupleData, saveCoupleData, clearAllData, getPetData, savePetData, getCurrency, saveCurrency, getOwnedPets, saveOwnedPets, getStreakData, saveStreakData, getCurrentPetType, saveCurrentPetType, getSpecificPetData, saveSpecificPetData } from '../../lib/storage';
 import { useAuth } from '../../lib/authContext';
+import { useTheme } from '../../lib/themeContext';
 import { getMyPendingTurns } from '../../lib/gameHelper';
-import { TicTacToeGame, ConnectFourGame, ReversiGame, DotsAndBoxesGame, WhiteboardGame } from './activity';
+import { useRewardedAd } from '../../lib/rewardedAds';
+import { TicTacToeGame, ConnectFourGame, ReversiGame, DotsAndBoxesGame, WhiteboardGame, CheckersGame, MemoryMatchGame } from './activity';
+import { TriviaGame } from '../../components/games/TriviaGame';
+import { WouldYouRatherGame } from '../../components/games/WouldYouRatherGame';
+import { WhosMoreLikelyGame } from '../../components/games/WhosMoreLikelyGame';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Clipboard from 'expo-clipboard';
 import * as Animatable from 'react-native-animatable';
@@ -63,7 +71,10 @@ const PETS = {
 export default function PetScreen() {
   const isFocused = useIsFocused();
   const navigation = useNavigation();
+  const router = useRouter();
   const { signOut } = useAuth();
+  const { theme } = useTheme();
+  const styles = useMemo(() => getStyles(theme), [theme]);
   const [couple, setCouple] = useState(null);
   const [pet, setPet] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -77,13 +88,28 @@ export default function PetScreen() {
   const [inviteCode, setInviteCode] = useState('');
   const [userId, setUserId] = useState(null);
   const [currency, setCurrency] = useState(0);
-  const [streakData, setStreakData] = useState({ currentStreak: 0, lastActivityDate: null, streakRepairs: 0 });
+  const [streakData, setStreakData] = useState({ currentStreak: 0, lastActivityDate: null, streakRepairs: 0, activityDates: [] });
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
   const [showStreakCalendar, setShowStreakCalendar] = useState(false);
   const [showCoinsModal, setShowCoinsModal] = useState(false);
-  const [showProfileModal, setShowProfileModal] = useState(false);
+
+  // Rewarded ads setup
+  const { loaded: adLoaded, loading: adLoading, showAd } = useRewardedAd(async (rewardAmount, silent) => {
+    // User watched the ad and earned a reward
+    const currentCurrency = await getCurrency();
+    const newCurrency = currentCurrency + 10; // Award 10 coins
+    setCurrency(newCurrency);
+    await saveCurrency(newCurrency);
+    // Only show alert if not silent (silent is true for non-active tabs to prevent duplicate popups)
+    if (!silent) {
+      showAlert('Coins Earned! 🎉', 'You earned 10 coins for watching the ad!');
+    }
+  });
+
   const [userEmail, setUserEmail] = useState('');
   const [showLeaveCoupleModal, setShowLeaveCoupleModal] = useState(false);
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [partnerEmail, setPartnerEmail] = useState('');
   const [showChangePetModal, setShowChangePetModal] = useState(false);
   const [allPets, setAllPets] = useState([]);
@@ -95,12 +121,51 @@ export default function PetScreen() {
   const [showReversi, setShowReversi] = useState(false);
   const [showDotsAndBoxes, setShowDotsAndBoxes] = useState(false);
   const [showWhiteboard, setShowWhiteboard] = useState(false);
+  const [showCheckers, setShowCheckers] = useState(false);
+  const [showMemoryMatch, setShowMemoryMatch] = useState(false);
+  const [showTrivia, setShowTrivia] = useState(false);
+  const [showWouldYouRather, setShowWouldYouRather] = useState(false);
+  const [showWhosMoreLikely, setShowWhosMoreLikely] = useState(false);
+
+  const handleShareInviteCode = async () => {
+    if (couple?.invite_code) {
+      try {
+        await Share.share({
+          message: `Join me on Spark! My invite code is: ${couple.invite_code}`,
+        });
+      } catch (error) {
+        console.error('Error sharing:', error);
+      }
+    }
+  };
+
+  // Set up header button for profile
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => router.push('/profile')}
+          style={{ marginRight: 15 }}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="person-circle" size={28} color={theme.primary} />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, theme]);
 
   useEffect(() => {
     loadUserData();
     const interval = setInterval(decayHappiness, 60000); // Check every minute
     return () => clearInterval(interval);
   }, []);
+
+  // Reload currency when tab becomes focused (for real-time updates from other tabs)
+  useEffect(() => {
+    if (isFocused) {
+      getCurrency().then(setCurrency);
+    }
+  }, [isFocused]);
 
   // Poll for pet and couple updates every 10 seconds, only when tab is focused
   useEffect(() => {
@@ -214,19 +279,7 @@ export default function PetScreen() {
     };
   }, [couple?.id]);
 
-  // Add profile button to header
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <TouchableOpacity
-          onPress={() => setShowProfileModal(true)}
-          style={{ marginRight: 15 }}
-        >
-          <Ionicons name="person-circle" size={32} color="#FF1493" />
-        </TouchableOpacity>
-      ),
-    });
-  }, [navigation]);
+
 
   function showAlert(title, message) {
     setCustomAlert({ visible: true, title, message });
@@ -708,9 +761,9 @@ export default function PetScreen() {
       await savePetData(data);
       setShowChangePetModal(false);
 
-      // Force UI refresh by reloading couple data
+      // Force UI refresh by reloading user data
       setTimeout(() => {
-        loadCoupleData();
+        loadUserData();
       }, 100);
 
       showAlert('Success!', `Switched to ${data.pet_name}!`);
@@ -828,6 +881,64 @@ export default function PetScreen() {
     }
   }
 
+  async function deleteAccount() {
+    try {
+      console.log('🗑️ Starting account deletion...');
+
+      if (!user) {
+        showAlert('Error', 'No user logged in');
+        return;
+      }
+
+      // First leave the couple (this deletes couple-related data)
+      if (couple) {
+        // Delete pet if exists
+        if (pet) {
+          await supabase.from('pets').delete().eq('id', pet.id);
+        }
+
+        // Delete memories
+        await supabase.from('memories').delete().eq('couple_id', couple.id);
+
+        // Delete conversation games
+        await supabase.from('conversation_games').delete().eq('couple_id', couple.id);
+
+        // Delete whiteboard drawings
+        await supabase.from('whiteboard_drawings').delete().eq('couple_id', couple.id);
+
+        // Delete game invites
+        await supabase.from('game_invites').delete().eq('couple_id', couple.id);
+
+        // Delete couple
+        await supabase.from('couples').delete().eq('id', couple.id);
+      }
+
+      // Clear local data
+      await saveCoupleData(null);
+      await savePetData(null);
+      await saveStreakData({ currentStreak: 0, lastActivityDate: null, streakRepairs: 0 });
+      await saveCurrency(0);
+
+      // Sign out and delete auth account
+      // Note: Full account deletion requires calling a Supabase Edge Function or server-side code
+      // For now, we sign out the user - they can request full deletion via email
+      const { error: signOutError } = await supabase.auth.signOut();
+
+      if (signOutError) {
+        console.error('Error signing out:', signOutError);
+      }
+
+      console.log('✅ Account data deleted, user signed out');
+      setShowDeleteAccountModal(false);
+      setShowSettingsModal(false);
+      showAlert('Account Deleted', 'Your account and all data have been deleted.');
+
+    } catch (error) {
+      console.error('Error deleting account:', error);
+      showAlert('Error', 'Failed to delete account. Please try again or contact support.');
+    }
+  }
+
   function handlePetTypeSelect(petType) {
     setSelectedPetType(petType);
     setShowPetSelectModal(false);
@@ -906,7 +1017,7 @@ export default function PetScreen() {
       // Force UI refresh
       console.log('🔄 Forcing UI refresh...');
       setTimeout(() => {
-        loadCoupleData();
+        loadUserData();
       }, 200);
     } catch (err) {
       console.error('Unexpected error creating pet:', err);
@@ -1030,7 +1141,9 @@ export default function PetScreen() {
     }
 
     // Give currency reward
-    const newCurrency = currency + 5;
+    // Always read current value from storage to avoid race conditions
+    const currentCurrency = await getCurrency();
+    const newCurrency = currentCurrency + 5;
     setCurrency(newCurrency);
     await saveCurrency(newCurrency);
 
@@ -1094,11 +1207,71 @@ export default function PetScreen() {
 
     const daysDiff = Math.floor((today - lastDate) / (1000 * 60 * 60 * 24));
 
-    if (daysDiff > 1) {
-      // Streak is broken
-      streak.currentStreak = 0;
-      await saveStreakData(streak);
-      setStreakData(streak);
+    if (daysDiff > 1 && streak.currentStreak > 0) {
+      // Streak is broken - check if user can buy a repair
+      const currentCurrency = await getCurrency();
+      const STREAK_REPAIR_PRICE = 100;
+
+      if (currentCurrency >= STREAK_REPAIR_PRICE) {
+        // User has enough coins - offer to purchase repair
+        Alert.alert(
+          '🔥 Streak Broken!',
+          `You missed a day and lost your ${streak.currentStreak} day streak!\n\nWould you like to purchase a Streak Repair for ${STREAK_REPAIR_PRICE} coins to save it?`,
+          [
+            {
+              text: 'No Thanks',
+              style: 'cancel',
+              onPress: async () => {
+                // Break the streak
+                const previousStreak = streak.currentStreak;
+                streak.currentStreak = 0;
+                streak.lastStreakBeforeBreak = previousStreak; // Save for potential future repair
+                await saveStreakData(streak);
+                setStreakData(streak);
+              }
+            },
+            {
+              text: `Buy Repair (${STREAK_REPAIR_PRICE} 💰)`,
+              onPress: async () => {
+                // Purchase and apply repair
+                const newCurrency = currentCurrency - STREAK_REPAIR_PRICE;
+                await saveCurrency(newCurrency);
+                setCurrency(newCurrency);
+
+                // Restore streak with a bandaid marker
+                const yesterday = new Date(today);
+                yesterday.setDate(today.getDate() - 1);
+                const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+                if (!streak.bandaidDates) {
+                  streak.bandaidDates = [];
+                }
+                if (!streak.bandaidDates.includes(yesterdayStr)) {
+                  streak.bandaidDates.push(yesterdayStr);
+                }
+
+                streak.lastActivityDate = new Date().toISOString();
+                await saveStreakData(streak);
+                setStreakData(streak);
+
+                showAlert('Streak Saved! 🩹', `You spent ${STREAK_REPAIR_PRICE} coins to repair your streak. Keep it going!`);
+              }
+            }
+          ]
+        );
+      } else {
+        // Not enough coins - just break the streak
+        const previousStreak = streak.currentStreak;
+        streak.currentStreak = 0;
+        streak.lastStreakBeforeBreak = previousStreak;
+        await saveStreakData(streak);
+        setStreakData(streak);
+
+        showAlert(
+          'Streak Broken 💔',
+          `You missed a day and lost your ${previousStreak} day streak!\n\nStreak Repairs cost ${STREAK_REPAIR_PRICE} coins and can be purchased in the Marketplace.`
+        );
+      }
     }
   }
 
@@ -1171,20 +1344,18 @@ export default function PetScreen() {
     const daysInMonth = lastDay.getDate();
     const startingDayOfWeek = firstDay.getDay();
 
-    // Calculate streak dates
-    const streakDates = [];
+    // Calculate activity dates (all historical activity days)
+    const activityDaysInMonth = [];
     const bandaidDates = streakData.bandaidDates || [];
+    const allActivityDates = streakData.activityDates || [];
 
-    if (streakData.currentStreak > 0 && streakData.lastActivityDate) {
-      const lastActivity = new Date(streakData.lastActivityDate);
-      for (let i = 0; i < streakData.currentStreak; i++) {
-        const streakDate = new Date(lastActivity);
-        streakDate.setDate(lastActivity.getDate() - i);
-        if (streakDate.getMonth() === currentMonth && streakDate.getFullYear() === currentYear) {
-          streakDates.push(streakDate.getDate());
-        }
+    // Show all historical activity dates for this month
+    allActivityDates.forEach(dateStr => {
+      const activityDate = new Date(dateStr);
+      if (activityDate.getMonth() === currentMonth && activityDate.getFullYear() === currentYear) {
+        activityDaysInMonth.push(activityDate.getDate());
       }
-    }
+    });
 
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1202,7 +1373,7 @@ export default function PetScreen() {
 
     // Add days of the month
     for (let day = 1; day <= daysInMonth; day++) {
-      const isStreakDay = streakDates.includes(day);
+      const isActivityDay = activityDaysInMonth.includes(day);
       const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       const isBandaidDay = bandaidDates.includes(dateStr);
       const isToday = day === currentDay;
@@ -1212,13 +1383,13 @@ export default function PetScreen() {
           key={day}
           style={[
             styles.calendarDay,
-            isStreakDay && styles.calendarStreakDay,
+            isActivityDay && styles.calendarStreakDay,
             isToday && styles.calendarToday,
           ]}
         >
           <Text style={[
             styles.calendarDayText,
-            isStreakDay && styles.calendarStreakText,
+            isActivityDay && styles.calendarStreakText,
             isToday && styles.calendarTodayText,
           ]}>
             {day}
@@ -1305,7 +1476,7 @@ export default function PetScreen() {
 
   if (error) {
     return (
-      <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+      <LinearGradient colors={theme.gradient} style={styles.container}>
         <View style={styles.centerContainer}>
           <Text style={styles.errorTitle}>Oops! Something went wrong</Text>
           <Text style={styles.errorText}>{error}</Text>
@@ -1354,15 +1525,63 @@ export default function PetScreen() {
 
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.loadingText}>Loading...</Text>
-        <Text style={styles.loadingSubtext}>Setting up your app...</Text>
-      </View>
+      <LinearGradient
+        colors={theme.gradient}
+        style={styles.loadingContainer}
+      >
+        <Animatable.View
+          animation="fadeIn"
+          duration={800}
+          style={styles.loadingContent}
+        >
+          {/* App Icon/Logo */}
+          <Animatable.View
+            animation="pulse"
+            iterationCount="infinite"
+            duration={2000}
+            style={styles.loadingIconContainer}
+          >
+            <Image
+              source={require('../../assets/spark_logo.png')}
+              style={{ width: 250, height: 250 }}
+              resizeMode="contain"
+            />
+          </Animatable.View>
+
+          {/* App Title */}
+          <Animatable.Text
+            animation="fadeInUp"
+            delay={200}
+            style={[styles.loadingTitle, { marginTop: 20 }]}
+          >
+            Spark ⚡
+          </Animatable.Text>
+
+          {/* Loading Indicator */}
+          <Animatable.View
+            animation="fadeInUp"
+            delay={400}
+            style={styles.loadingIndicatorContainer}
+          >
+            <ActivityIndicator size="large" color={theme.primary} />
+            <Text style={styles.loadingText}>Getting everything ready...</Text>
+          </Animatable.View>
+
+          {/* Subtle tagline */}
+          <Animatable.Text
+            animation="fadeIn"
+            delay={600}
+            style={styles.loadingTagline}
+          >
+            Building stronger connections together
+          </Animatable.Text>
+        </Animatable.View>
+      </LinearGradient>
     );
   }
 
   return (
-    <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+    <LinearGradient colors={theme.gradient} style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {couple && pet ? (
           <View style={styles.petContainer}>
@@ -1413,7 +1632,7 @@ export default function PetScreen() {
                   onPress={() => setShowHappinessInfoModal(true)}
                   style={styles.happinessInfoIcon}
                 >
-                  <Ionicons name="information-circle-outline" size={18} color="#FF69B4" />
+                  <Ionicons name="information-circle-outline" size={18} color={theme.secondary} />
                 </TouchableOpacity>
               </View>
               <View style={styles.happinessBarContainer}>
@@ -1445,7 +1664,12 @@ export default function PetScreen() {
                       connectfour: { name: 'Connect Four', icon: '🔴', emoji: '🟡' },
                       reversi: { name: 'Reversi', icon: '⚫', emoji: '⚪' },
                       dotsandboxes: { name: 'Dots & Boxes', icon: '📦', emoji: '✏️' },
-                      whiteboard: { name: 'Whiteboard', icon: '🎨', emoji: '✏️' }
+                      whiteboard: { name: 'Whiteboard', icon: '🎨', emoji: '✏️' },
+                      checkers: { name: 'Checkers', icon: '⭕', emoji: '⚫' },
+                      memorymatch: { name: 'Memory Match', icon: '🎮', emoji: '🎯' },
+                      trivia: { name: 'Trivia', icon: '💭', emoji: '❤️' },
+                      would_you_rather: { name: 'Would You Rather', icon: '🤔', emoji: '💭' },
+                      whos_more_likely: { name: "Who's More Likely", icon: '👫', emoji: '❓' }
                     };
                     const info = gameInfo[game.game_type] || { name: game.game_type, icon: '🎮', emoji: '🎯' };
 
@@ -1470,6 +1694,21 @@ export default function PetScreen() {
                             case 'whiteboard':
                               setShowWhiteboard(true);
                               break;
+                            case 'checkers':
+                              setShowCheckers(true);
+                              break;
+                            case 'memorymatch':
+                              setShowMemoryMatch(true);
+                              break;
+                            case 'trivia':
+                              setShowTrivia(true);
+                              break;
+                            case 'would_you_rather':
+                              setShowWouldYouRather(true);
+                              break;
+                            case 'whos_more_likely':
+                              setShowWhosMoreLikely(true);
+                              break;
                           }
                         }}
                       >
@@ -1485,20 +1724,30 @@ export default function PetScreen() {
               </View>
             )}
 
-            {couple && (
+            {couple && !couple.auth_user2_id && (
               <View style={styles.coupleInfo}>
                 <Text style={styles.coupleText}>
                   Invite Code: {couple.invite_code}
                 </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    Clipboard.setStringAsync(couple.invite_code);
-                    showAlert('Copied!', 'Invite code copied to clipboard');
-                  }}
-                  style={styles.copyButton}
-                >
-                  <Text style={styles.copyButtonText}>Copy Code</Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', gap: 10, width: '100%' }}>
+                  <TouchableOpacity
+                    onPress={handleShareInviteCode}
+                    style={[styles.copyButton, { backgroundColor: theme.primary, flex: 1 }]}
+                  >
+                    <Ionicons name="share-social" size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
+                    <Text style={[styles.copyButtonText, { color: '#FFFFFF' }]}>Share</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => {
+                      Clipboard.setStringAsync(couple.invite_code);
+                      showAlert('Copied!', 'Invite code copied to clipboard');
+                    }}
+                    style={[styles.copyButton, { flex: 1, backgroundColor: theme.backgroundSecondary }]}
+                  >
+                    <Ionicons name="copy" size={18} color={theme.primary} style={{ marginRight: 8 }} />
+                    <Text style={styles.copyButtonText}>Copy</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
 
@@ -1665,7 +1914,7 @@ export default function PetScreen() {
             <TextInput
               style={styles.nameInput}
               placeholder="Enter pet name..."
-              placeholderTextColor="#FFB6D9"
+              placeholderTextColor={theme.border}
               value={petName}
               onChangeText={setPetName}
               maxLength={20}
@@ -1721,7 +1970,7 @@ export default function PetScreen() {
             <TextInput
               style={styles.nameInput}
               placeholder="Enter new name..."
-              placeholderTextColor="#FFB6D9"
+              placeholderTextColor={theme.border}
               value={petName}
               onChangeText={setPetName}
               maxLength={20}
@@ -1806,11 +2055,11 @@ export default function PetScreen() {
 
               <View style={styles.calendarLegend}>
                 <View style={styles.legendItem}>
-                  <View style={[styles.legendBox, { backgroundColor: '#FF1493' }]} />
-                  <Text style={styles.legendText}>Streak Day</Text>
+                  <View style={[styles.legendBox, { backgroundColor: theme.primary }]} />
+                  <Text style={styles.legendText}>Activity Day</Text>
                 </View>
                 <View style={styles.legendItem}>
-                  <View style={[styles.legendBox, { backgroundColor: '#FFE5EC' }]}>
+                  <View style={[styles.legendBox, { backgroundColor: theme.backgroundSecondary }]}>
                     <Text style={styles.legendBandaid}>🩹</Text>
                   </View>
                   <Text style={styles.legendText}>Repaired Day</Text>
@@ -1852,15 +2101,29 @@ export default function PetScreen() {
 
             <View style={styles.coinOptions}>
               <TouchableOpacity
-                style={styles.coinOptionCard}
-                onPress={() => {
-                  showAlert('Coming Soon!', 'Watch ads to earn coins - feature coming soon!');
-                  setShowCoinsModal(false);
+                style={[
+                  styles.coinOptionCard,
+                  !adLoaded && styles.coinOptionCardDisabled
+                ]}
+                onPress={async () => {
+                  if (adLoading) {
+                    showAlert('Loading...', 'The ad is still loading. Please wait a moment and try again.');
+                  } else if (!adLoaded) {
+                    showAlert('Ad Not Available', 'No ad is available right now. Please try again later.');
+                  } else {
+                    setShowCoinsModal(false);
+                    const shown = await showAd();
+                    if (!shown) {
+                      showAlert('Error', 'Failed to show ad. Please try again.');
+                    }
+                  }
                 }}
               >
                 <Text style={styles.coinOptionIcon}>📺</Text>
                 <Text style={styles.coinOptionTitle}>Watch Ad</Text>
-                <Text style={styles.coinOptionReward}>+10 Coins</Text>
+                <Text style={styles.coinOptionReward}>
+                  {adLoading ? 'Loading...' : adLoaded ? '+10 Coins' : 'Unavailable'}
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1882,6 +2145,99 @@ export default function PetScreen() {
             >
               <Text style={styles.buttonText}>Close</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Settings Modal */}
+      <Modal visible={showSettingsModal} animationType="slide" transparent>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Settings</Text>
+              <TouchableOpacity onPress={() => setShowSettingsModal(false)}>
+                <Text style={styles.closeButton}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.settingsOptions}>
+              <TouchableOpacity
+                style={styles.settingsOption}
+                onPress={() => {
+                  setShowSettingsModal(false);
+                  setShowChangePetModal(true);
+                }}
+              >
+                <Ionicons name="paw-outline" size={24} color={theme.primary} />
+                <Text style={styles.settingsOptionText}>Change Pet</Text>
+                <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.settingsOption}
+                onPress={() => {
+                  setShowSettingsModal(false);
+                  setShowLeaveCoupleModal(true);
+                }}
+              >
+                <Ionicons name="heart-dislike-outline" size={24} color={theme.primary} />
+                <Text style={styles.settingsOptionText}>Leave Couple</Text>
+                <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.settingsOption, styles.dangerOption]}
+                onPress={() => {
+                  setShowSettingsModal(false);
+                  setShowDeleteAccountModal(true);
+                }}
+              >
+                <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+                <Text style={[styles.settingsOptionText, styles.dangerText]}>Delete Account</Text>
+                <Ionicons name="chevron-forward" size={20} color="#FF3B30" />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.closeModalButton}
+              onPress={() => setShowSettingsModal(false)}
+            >
+              <Text style={styles.buttonText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Account Confirmation Modal */}
+      <Modal visible={showDeleteAccountModal} animationType="fade" transparent>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.warningIcon}>⚠️</Text>
+            <Text style={styles.modalTitle}>Delete Account?</Text>
+            <Text style={styles.deleteWarningText}>
+              This action is permanent and cannot be undone. All your data will be deleted:
+            </Text>
+            <View style={styles.deleteWarningList}>
+              <Text style={styles.deleteWarningItem}>• Your pet and progress</Text>
+              <Text style={styles.deleteWarningItem}>• All photos and memories</Text>
+              <Text style={styles.deleteWarningItem}>• Game history and scores</Text>
+              <Text style={styles.deleteWarningItem}>• Your couple connection</Text>
+            </View>
+
+            <View style={styles.deleteButtonsRow}>
+              <TouchableOpacity
+                style={[styles.deleteActionButton, styles.cancelDeleteButton]}
+                onPress={() => setShowDeleteAccountModal(false)}
+              >
+                <Text style={styles.cancelDeleteText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.deleteActionButton, styles.confirmDeleteButton]}
+                onPress={deleteAccount}
+              >
+                <Text style={styles.confirmDeleteText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1916,101 +2272,7 @@ export default function PetScreen() {
         </View>
       </Modal>
 
-      {/* Profile Modal */}
-      <Modal visible={showProfileModal} animationType="slide" transparent>
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Profile</Text>
 
-            <View style={styles.profileInfo}>
-              <View style={styles.profileRow}>
-                <Text style={styles.profileLabel}>Email:</Text>
-                <Text style={styles.profileValue}>{userEmail}</Text>
-              </View>
-
-              <View style={styles.profileRow}>
-                <Text style={styles.profileLabel}>Current Streak:</Text>
-                <Text style={styles.profileValue}>🔥 {streakData.currentStreak} days</Text>
-              </View>
-
-              <View style={styles.profileRow}>
-                <Text style={styles.profileLabel}>Coins:</Text>
-                <Text style={styles.profileValue}>💰 {currency}</Text>
-              </View>
-
-              {couple && (
-                <>
-                  <View style={styles.profileDivider} />
-                  <Text style={styles.profileSectionTitle}>Couple Info</Text>
-
-                  {partnerEmail ? (
-                    <View style={styles.profileRow}>
-                      <Text style={styles.profileLabel}>Partner:</Text>
-                      <Text style={styles.profileValue}>{partnerEmail}</Text>
-                    </View>
-                  ) : (
-                    <>
-                      <View style={styles.profileRow}>
-                        <Text style={styles.profileLabel}>Invite Code:</Text>
-                        <Text style={styles.profileValue}>{couple.invite_code}</Text>
-                      </View>
-                      <TouchableOpacity
-                        style={styles.copyCodeButton}
-                        onPress={async () => {
-                          await Clipboard.setStringAsync(couple.invite_code);
-                          showAlert('Copied!', 'Invite code copied to clipboard');
-                        }}
-                      >
-                        <Text style={styles.copyCodeButtonText}>📋 Copy Invite Code</Text>
-                      </TouchableOpacity>
-                    </>
-                  )}
-
-                  {pet && (
-                    <TouchableOpacity
-                      style={styles.changePetButton}
-                      onPress={() => {
-                        loadAllPets();
-                        setShowProfileModal(false);
-                        setShowChangePetModal(true);
-                      }}
-                    >
-                      <Text style={styles.changePetButtonText}>🔄 Change Pet</Text>
-                    </TouchableOpacity>
-                  )}
-
-                  <TouchableOpacity
-                    style={styles.leaveCoupleButton}
-                    onPress={() => {
-                      setShowProfileModal(false);
-                      setShowLeaveCoupleModal(true);
-                    }}
-                  >
-                    <Text style={styles.leaveCoupleButtonText}>Leave Couple</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-            </View>
-
-            <TouchableOpacity
-              style={styles.logoutButton}
-              onPress={async () => {
-                setShowProfileModal(false);
-                await signOut();
-              }}
-            >
-              <Text style={styles.logoutButtonText}>Logout</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.closeModalButton}
-              onPress={() => setShowProfileModal(false)}
-            >
-              <Text style={styles.buttonText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       {/* Leave Couple Confirmation Modal */}
       <Modal visible={showLeaveCoupleModal} animationType="slide" transparent>
@@ -2189,11 +2451,86 @@ export default function PetScreen() {
           }}
         />
       </Modal>
+
+      <Modal visible={showCheckers} animationType="slide" transparent>
+        <CheckersGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowCheckers(false)}
+          onTurnComplete={async () => {
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(updatedTurns);
+          }}
+          onComplete={async (isWinner) => {
+            setShowCheckers(false);
+            await feedPet(5);
+          }}
+        />
+      </Modal>
+
+      <Modal visible={showMemoryMatch} animationType="slide" transparent>
+        <MemoryMatchGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowMemoryMatch(false)}
+          onTurnComplete={async () => {
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(updatedTurns);
+          }}
+          onComplete={async (isWinner) => {
+            setShowMemoryMatch(false);
+            await feedPet(5);
+          }}
+        />
+      </Modal>
+
+      {/* Conversation Games */}
+      <Modal visible={showTrivia} animationType="slide">
+        <TriviaGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowTrivia(false)}
+          onComplete={async () => {
+            setShowTrivia(false);
+            await feedPet(5);
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(updatedTurns);
+          }}
+        />
+      </Modal>
+
+      <Modal visible={showWouldYouRather} animationType="slide">
+        <WouldYouRatherGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowWouldYouRather(false)}
+          onComplete={async () => {
+            setShowWouldYouRather(false);
+            await feedPet(5);
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(updatedTurns);
+          }}
+        />
+      </Modal>
+
+      <Modal visible={showWhosMoreLikely} animationType="slide">
+        <WhosMoreLikelyGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowWhosMoreLikely(false)}
+          onComplete={async () => {
+            setShowWhosMoreLikely(false);
+            await feedPet(5);
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            setPendingGames(updatedTurns);
+          }}
+        />
+      </Modal>
     </LinearGradient>
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -2202,32 +2539,80 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
+  },
+  loadingIconContainer: {
+    marginBottom: 30,
+    backgroundColor: theme.card,
+    borderRadius: 80,
+    width: 160,
+    height: 160,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: theme.primary,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 15,
+  },
+  loadingIcon: {
+    fontSize: 80,
+  },
+  loadingTitle: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: theme.primary,
+    marginBottom: 40,
+    letterSpacing: -0.5,
+    textAlign: 'center',
+  },
+  loadingIndicatorContainer: {
+    alignItems: 'center',
+    gap: 16,
+  },
   loadingText: {
-    fontSize: 18,
-    color: '#FF1493',
-    fontWeight: 'bold',
+    fontSize: 16,
+    color: theme.secondary,
+    fontWeight: '600',
+    marginTop: 12,
+  },
+  loadingTagline: {
+    fontSize: 14,
+    color: '#999999',
+    marginTop: 40,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    opacity: 0.7,
   },
   loadingSubtext: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginTop: 10,
   },
   errorTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 10,
     textAlign: 'center',
   },
   errorText: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginBottom: 20,
     paddingHorizontal: 20,
   },
   retryButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     paddingHorizontal: 30,
     borderRadius: 15,
@@ -2250,29 +2635,29 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 10,
     right: 10,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     paddingHorizontal: 15,
     paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     zIndex: 10,
   },
   currencyBadgeText: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   streakBadge: {
     position: 'absolute',
     top: 10,
     left: 10,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     paddingHorizontal: 15,
     paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     zIndex: 10,
     flexDirection: 'row',
     alignItems: 'center',
@@ -2280,11 +2665,11 @@ const styles = StyleSheet.create({
   streakBadgeText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   repairButton: {
     marginLeft: 8,
-    backgroundColor: '#FFE5EC',
+    backgroundColor: theme.backgroundSecondary,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 10,
@@ -2292,7 +2677,7 @@ const styles = StyleSheet.create({
   repairButtonText: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   petImage: {
     width: 400,
@@ -2318,7 +2703,7 @@ const styles = StyleSheet.create({
   happinessLabel: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
   },
   happinessInfoIcon: {
@@ -2327,29 +2712,29 @@ const styles = StyleSheet.create({
   },
   happinessBarContainer: {
     height: 30,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     overflow: 'hidden',
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
   },
   happinessBar: {
     height: '100%',
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
   },
   happinessText: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginTop: 5,
   },
   feedButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 15,
     paddingHorizontal: 40,
     borderRadius: 25,
     marginBottom: 8,
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
@@ -2367,7 +2752,7 @@ const styles = StyleSheet.create({
   miniGamesHeader: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 8,
     marginLeft: 4,
   },
@@ -2375,15 +2760,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   miniGameCard: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 12,
     padding: 12,
     marginRight: 10,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     minWidth: 90,
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 2,
@@ -2403,58 +2788,61 @@ const styles = StyleSheet.create({
   },
   miniGameName: {
     fontSize: 11,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: '600',
     textAlign: 'center',
   },
   infoBox: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     padding: 15,
     borderRadius: 15,
     marginBottom: 8,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   infoText: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 5,
   },
   coupleInfo: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     padding: 15,
     borderRadius: 15,
     marginBottom: 8,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     width: '100%',
     alignItems: 'center',
   },
   coupleText: {
     fontSize: 16,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
     marginBottom: 10,
   },
   copyButton: {
-    backgroundColor: '#FFE5EC',
-    paddingVertical: 8,
-    paddingHorizontal: 20,
-    borderRadius: 10,
+    backgroundColor: theme.backgroundSecondary,
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 12,
     marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   copyButtonText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   deviceIdText: {
     fontSize: 10,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginTop: 5,
   },
   deviceIdInfo: {
     fontSize: 10,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginTop: 15,
     textAlign: 'center',
   },
@@ -2463,7 +2851,7 @@ const styles = StyleSheet.create({
     marginBottom: 0,
   },
   resetText: {
-    color: '#FF69B4',
+    color: theme.secondary,
     fontSize: 14,
   },
   modalContainer: {
@@ -2473,7 +2861,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   modalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     width: '85%',
@@ -2482,18 +2870,18 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 10,
   },
   modalSubtitle: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginBottom: 20,
   },
   button: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     padding: 15,
     borderRadius: 15,
     alignItems: 'center',
@@ -2509,18 +2897,18 @@ const styles = StyleSheet.create({
     marginVertical: 10,
   },
   dividerText: {
-    color: '#FFB6D9',
+    color: theme.border,
     fontSize: 14,
     fontWeight: 'bold',
   },
   input: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 10,
     padding: 15,
     marginBottom: 15,
     fontSize: 16,
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
     textAlign: 'center',
   },
   petSelectionScrollContainer: {
@@ -2534,7 +2922,7 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   petSelectionModalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     width: '95%',
@@ -2542,7 +2930,7 @@ const styles = StyleSheet.create({
   },
   petSelectionNote: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginTop: 5,
     marginBottom: 15,
@@ -2559,13 +2947,13 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   petCardContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 12,
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FFE5EC',
-    shadowColor: '#FF1493',
+    borderColor: theme.backgroundSecondary,
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
@@ -2584,12 +2972,12 @@ const styles = StyleSheet.create({
   petCardTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   petCardDescription: {
     fontSize: 11,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     lineHeight: 14,
     marginTop: 3,
@@ -2629,8 +3017,8 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
   visitShopText: {
-    backgroundColor: '#FFB6D9',
-    color: '#FF1493',
+    backgroundColor: theme.border,
+    color: theme.primary,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 10,
@@ -2641,7 +3029,7 @@ const styles = StyleSheet.create({
   petNameDisplay: {
     fontSize: 32,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginTop: 5,
     marginBottom: 5,
@@ -2658,17 +3046,17 @@ const styles = StyleSheet.create({
     fontSize: 80,
   },
   nameInput: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 15,
     padding: 15,
     fontSize: 18,
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
     width: '100%',
     marginBottom: 20,
     textAlign: 'center',
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   modalButtons: {
     flexDirection: 'row',
@@ -2684,10 +3072,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   cancelButton: {
-    backgroundColor: '#FFB6D9',
+    backgroundColor: theme.border,
   },
   confirmButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
   },
   modalButtonText: {
     color: 'white',
@@ -2701,15 +3089,15 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   alertBox: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     width: '85%',
     maxWidth: 400,
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FF1493',
-    shadowColor: '#FF1493',
+    borderColor: theme.primary,
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 10,
@@ -2718,19 +3106,19 @@ const styles = StyleSheet.create({
   alertTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 15,
     textAlign: 'center',
   },
   alertMessage: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 25,
     textAlign: 'center',
     lineHeight: 24,
   },
   alertButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     paddingHorizontal: 40,
     borderRadius: 15,
@@ -2750,11 +3138,11 @@ const styles = StyleSheet.create({
   },
   closeButton: {
     fontSize: 28,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   calendarModalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 25,
     width: '90%',
@@ -2768,12 +3156,12 @@ const styles = StyleSheet.create({
   },
   statCard: {
     flex: 1,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 15,
     borderRadius: 15,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   statCardIcon: {
     fontSize: 32,
@@ -2782,18 +3170,18 @@ const styles = StyleSheet.create({
   statCardValue: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 4,
   },
   statCardLabel: {
     fontSize: 11,
-    color: '#FF69B4',
+    color: theme.secondary,
     fontWeight: '600',
     textAlign: 'center',
   },
   calendarContainer: {
     minHeight: 200,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 15,
     padding: 20,
     marginBottom: 20,
@@ -2802,18 +3190,18 @@ const styles = StyleSheet.create({
   },
   calendarInfo: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     lineHeight: 22,
   },
   closeModalButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 15,
     borderRadius: 15,
     alignItems: 'center',
   },
   coinsModalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 25,
     width: '90%',
@@ -2821,12 +3209,12 @@ const styles = StyleSheet.create({
   },
   coinBalanceDisplay: {
     alignItems: 'center',
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 30,
     borderRadius: 20,
     marginBottom: 25,
     borderWidth: 3,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   coinBalanceText: {
     fontSize: 60,
@@ -2835,12 +3223,12 @@ const styles = StyleSheet.create({
   coinBalanceAmount: {
     fontSize: 48,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   coinBalanceLabel: {
     fontSize: 18,
-    color: '#FF69B4',
+    color: theme.secondary,
     fontWeight: 'bold',
   },
   coinOptions: {
@@ -2851,12 +3239,15 @@ const styles = StyleSheet.create({
   },
   coinOptionCard: {
     flex: 1,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 20,
     borderRadius: 15,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
+  },
+  coinOptionCardDisabled: {
+    opacity: 0.5,
   },
   coinOptionIcon: {
     fontSize: 40,
@@ -2865,18 +3256,18 @@ const styles = StyleSheet.create({
   coinOptionTitle: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   coinOptionReward: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   calendarScroll: {
     maxHeight: 400,
   },
   calendar: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     padding: 15,
     marginBottom: 20,
@@ -2884,7 +3275,7 @@ const styles = StyleSheet.create({
   calendarMonthTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 15,
   },
@@ -2897,7 +3288,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 12,
     fontWeight: 'bold',
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   calendarGrid: {
     flexDirection: 'row',
@@ -2912,17 +3303,17 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   calendarStreakDay: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     borderRadius: 8,
   },
   calendarToday: {
     borderWidth: 2,
-    borderColor: '#FF69B4',
+    borderColor: theme.secondary,
     borderRadius: 8,
   },
   calendarDayText: {
     fontSize: 14,
-    color: '#333',
+    color: theme.text,
     fontWeight: '500',
   },
   calendarStreakText: {
@@ -2941,7 +3332,7 @@ const styles = StyleSheet.create({
   calendarLegend: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 15,
     borderRadius: 15,
     marginBottom: 20,
@@ -2963,7 +3354,7 @@ const styles = StyleSheet.create({
   },
   legendText: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
     fontWeight: '500',
   },
   achievementsSection: {
@@ -2972,22 +3363,22 @@ const styles = StyleSheet.create({
   achievementsTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 15,
     textAlign: 'center',
   },
   achievementCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     padding: 15,
     borderRadius: 15,
     marginBottom: 10,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   achievementLocked: {
-    backgroundColor: '#F5F5F5',
+    backgroundColor: theme.backgroundSecondary,
     opacity: 0.6,
   },
   achievementIcon: {
@@ -3003,15 +3394,15 @@ const styles = StyleSheet.create({
   achievementName: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 2,
   },
   achievementDescription: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   achievementTextLocked: {
-    color: '#999',
+    color: theme.textSecondary,
   },
   achievementUnlocked: {
     fontSize: 24,
@@ -3027,31 +3418,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#FFE5EC',
+    borderBottomColor: theme.backgroundSecondary,
   },
   profileLabel: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     fontWeight: '600',
   },
   profileValue: {
     fontSize: 16,
-    color: '#333',
+    color: theme.text,
     maxWidth: '60%',
   },
   profileDivider: {
     height: 1,
-    backgroundColor: '#FFE5EC',
+    backgroundColor: theme.backgroundSecondary,
     marginVertical: 15,
   },
   profileSectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 10,
   },
   copyCodeButton: {
-    backgroundColor: '#FFB6D9',
+    backgroundColor: theme.border,
     paddingVertical: 10,
     paddingHorizontal: 15,
     borderRadius: 10,
@@ -3060,7 +3451,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   copyCodeButtonText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
     fontSize: 14,
   },
@@ -3097,7 +3488,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   logoutButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 15,
     borderRadius: 15,
     alignItems: 'center',
@@ -3109,7 +3500,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   changePetButton: {
-    backgroundColor: '#9370DB',
+    backgroundColor: theme.secondary,
     paddingVertical: 12,
     borderRadius: 10,
     alignItems: 'center',
@@ -3122,7 +3513,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   scrollModalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 20,
     marginHorizontal: 20,
@@ -3149,17 +3540,17 @@ const styles = StyleSheet.create({
   },
   changePetCard: {
     width: '48%',
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 15,
     padding: 15,
     marginBottom: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     alignItems: 'center',
   },
   changePetCardActive: {
-    borderColor: '#FF1493',
-    backgroundColor: '#FFE5EC',
+    borderColor: theme.primary,
+    backgroundColor: theme.backgroundSecondary,
   },
   changePetImage: {
     width: 80,
@@ -3173,7 +3564,7 @@ const styles = StyleSheet.create({
   changePetName: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 5,
   },
@@ -3185,7 +3576,7 @@ const styles = StyleSheet.create({
   },
   changePetHappiness: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
   },
   equippedBadge: {
@@ -3198,6 +3589,90 @@ const styles = StyleSheet.create({
   equippedBadgeText: {
     color: 'white',
     fontSize: 12,
+    fontWeight: 'bold',
+  },
+  settingsButton: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    padding: 10,
+    backgroundColor: theme.card,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  settingsOptions: {
+    marginVertical: 20,
+  },
+  settingsOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 15,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border,
+  },
+  settingsOptionText: {
+    flex: 1,
+    fontSize: 16,
+    color: theme.text,
+    marginLeft: 15,
+  },
+  dangerOption: {
+    borderBottomWidth: 0,
+  },
+  dangerText: {
+    color: '#FF3B30',
+  },
+  warningIcon: {
+    fontSize: 50,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  deleteWarningText: {
+    fontSize: 14,
+    color: theme.textSecondary,
+    textAlign: 'center',
+    marginVertical: 15,
+  },
+  deleteWarningList: {
+    alignSelf: 'flex-start',
+    marginLeft: 20,
+    marginBottom: 20,
+  },
+  deleteWarningItem: {
+    fontSize: 14,
+    color: theme.textSecondary,
+    marginVertical: 5,
+  },
+  deleteButtonsRow: {
+    flexDirection: 'row',
+    gap: 15,
+    marginTop: 10,
+  },
+  deleteActionButton: {
+    flex: 1,
+    paddingVertical: 15,
+    borderRadius: 15,
+    alignItems: 'center',
+  },
+  cancelDeleteButton: {
+    backgroundColor: theme.backgroundSecondary,
+  },
+  cancelDeleteText: {
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  confirmDeleteButton: {
+    backgroundColor: '#FF3B30',
+  },
+  confirmDeleteText: {
+    color: 'white',
+    fontSize: 16,
     fontWeight: 'bold',
   },
 });

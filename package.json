@@ -1,11 +1,11 @@
 {
-  "name": "couples-pet-fresh",
+  "name": "spark-couples-relationships",
   "version": "1.0.0",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web",
     "clear": "expo start -c",
     "tunnel": "expo start --tunnel"
@@ -32,6 +32,7 @@
     "react-native": "0.81.5",
     "react-native-android-widget": "^0.17.2",
     "react-native-animatable": "^1.4.0",
+    "react-native-google-mobile-ads": "^16.0.1",
     "react-native-reanimated": "~4.1.1",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",

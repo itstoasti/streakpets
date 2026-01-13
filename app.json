@@ -1,30 +1,32 @@
 {
   "expo": {
-    "name": "Couples Pet",
+    "name": "Spark",
     "slug": "couples-pet-fresh",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/spark_logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#FFE5EC"
+      "backgroundColor": "#FFFFFF"
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.couplespet.app"
     },
     "android": {
+      "icon": "./assets/icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#FFE5EC"
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#FF0000"
       },
       "package": "com.couplespet.app",
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "usesCleartextTraffic": true,
       "networkSecurityConfig": "./android-network-security-config.xml"
@@ -33,8 +35,33 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#FF1493",
+          "sounds": [
+            "./assets/notification-sound.wav"
+          ],
+          "androidMode": "default",
+          "androidCollapsedTitle": "⚡ Spark"
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-5918407268001346~3613576757",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ]
     ],
+    "notification": {
+      "icon": "./assets/icon.png",
+      "color": "#FF1493",
+      "androidMode": "default",
+      "androidCollapsedTitle": "⚡ Spark"
+    },
     "scheme": "couplespet",
     "extra": {
       "router": {

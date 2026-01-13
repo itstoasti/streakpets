@@ -1,14 +1,27 @@
 import { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
-import { View, ActivityIndicator, StyleSheet, LogBox } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, LogBox, Image } from 'react-native';
 import { AuthProvider, useAuth } from '../lib/authContext';
+import { ThemeProvider, useTheme } from '../lib/themeContext';
 import { registerForPushNotifications, savePushToken } from '../lib/notificationHelper';
+import mobileAds from 'react-native-google-mobile-ads';
 
 // Ignore AuthSessionMissingError - it's expected when no user is logged in
 LogBox.ignoreLogs([
   'Auth session missing',
   'AuthSessionMissingError',
+  'Auth error: [AuthSessionMissingError',
 ]);
+
+// Suppress console errors for AuthSessionMissingError
+const originalConsoleError = console.error;
+console.error = (...args) => {
+  const message = args.join(' ');
+  if (message.includes('AuthSessionMissingError') || message.includes('Auth session missing')) {
+    return; // Suppress this specific error
+  }
+  originalConsoleError(...args);
+};
 
 // Register widgets
 if (typeof require.resolve === 'function') {
@@ -41,6 +54,19 @@ function RootLayoutNav() {
   }, [user, loading, segments]);
 
   useEffect(() => {
+    // Initialize Google Mobile Ads SDK
+    mobileAds()
+      .initialize()
+      .then(adapterStatuses => {
+        console.log('✅ Google Mobile Ads initialized successfully');
+        console.log('Adapter statuses:', adapterStatuses);
+      })
+      .catch(error => {
+        console.error('❌ Failed to initialize Google Mobile Ads:', error);
+      });
+  }, []);
+
+  useEffect(() => {
     // Log any unhandled errors (except expected auth errors)
     const errorHandler = (error) => {
       // Ignore AuthSessionMissingError - this is expected when user is not logged in
@@ -70,11 +96,18 @@ function RootLayoutNav() {
     setupPushNotifications();
   }, [user]);
 
+  const { theme } = useTheme();
+
   // Show loading screen while checking auth status
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FF1493" />
+      <View style={[styles.loadingContainer, { backgroundColor: theme.background }]}>
+        <Image
+          source={require('../assets/spark_logo.png')}
+          style={styles.loadingLogo}
+          resizeMode="contain"
+        />
+        <ActivityIndicator size="large" color={theme.primary} style={{ marginTop: 40 }} />
       </View>
     );
   }
@@ -83,16 +116,31 @@ function RootLayoutNav() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(auth)" />
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="profile" options={{
+        presentation: 'modal',
+        headerShown: true,
+        title: 'Profile',
+        headerBackTitle: 'Back',
+        headerStyle: {
+          backgroundColor: theme.card,
+        },
+        headerTintColor: theme.text,
+        headerTitleStyle: {
+          color: theme.text,
+        },
+      }} />
     </Stack>
   );
 }
 
-// Root component that wraps everything with AuthProvider
+// Root component that wraps everything with ThemeProvider and AuthProvider
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <RootLayoutNav />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <RootLayoutNav />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 
@@ -101,6 +149,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFF0F5',
+  },
+  loadingLogo: {
+    width: 250,
+    height: 250,
   },
 });

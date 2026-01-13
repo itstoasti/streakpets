@@ -10,11 +10,12 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  SafeAreaView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../lib/authContext';
+import { useTheme } from '../../lib/themeContext';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -24,6 +25,8 @@ export default function LoginScreen() {
 
   const { signIn } = useAuth();
   const router = useRouter();
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
 
   async function handleLogin() {
     // Validation
@@ -50,23 +53,22 @@ export default function LoginScreen() {
   }
 
   return (
-    <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.keyboardView}
+    <LinearGradient colors={theme.gradient} style={styles.container}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardView}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
         >
-          <ScrollView
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-          >
-            {/* Header */}
-            <View style={styles.header}>
+          {/* Header */}
+          <View style={[styles.header, { paddingTop: insets.top + 20 }]}>
               <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                <Text style={styles.backButtonText}>← Back</Text>
+                <Text style={[styles.backButtonText, { color: theme.primary }]}>← Back</Text>
               </TouchableOpacity>
-              <Text style={styles.title}>Welcome Back!</Text>
-              <Text style={styles.subtitle}>Login to continue caring for your pet</Text>
+              <Text style={[styles.title, { color: theme.primary }]}>Welcome Back!</Text>
+              <Text style={[styles.subtitle, { color: theme.textSecondary }]}>Login to continue caring for your pet</Text>
             </View>
 
             {/* Form */}
@@ -119,12 +121,16 @@ export default function LoginScreen() {
                 style={styles.forgotPasswordButton}
                 disabled={loading}
               >
-                <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+                <Text style={[styles.forgotPasswordText, { color: theme.primary }]}>Forgot Password?</Text>
               </TouchableOpacity>
 
               {/* Login Button */}
               <TouchableOpacity
-                style={[styles.loginButton, loading && styles.loginButtonDisabled]}
+                style={[
+                  styles.loginButton,
+                  { backgroundColor: theme.primary, shadowColor: theme.primary },
+                  loading && styles.loginButtonDisabled
+                ]}
                 onPress={handleLogin}
                 disabled={loading}
                 activeOpacity={0.8}
@@ -138,27 +144,23 @@ export default function LoginScreen() {
 
               {/* Sign Up Link */}
               <View style={styles.signupLinkContainer}>
-                <Text style={styles.signupLinkText}>Don't have an account? </Text>
+                <Text style={[styles.signupLinkText, { color: theme.textSecondary }]}>Don't have an account? </Text>
                 <TouchableOpacity
                   onPress={() => router.replace('/(auth)/signup')}
                   disabled={loading}
                 >
-                  <Text style={styles.signupLinkButton}>Sign Up</Text>
+                  <Text style={[styles.signupLinkButton, { color: theme.primary }]}>Sign Up</Text>
                 </TouchableOpacity>
               </View>
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
-      </SafeAreaView>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
-  },
-  safeArea: {
     flex: 1,
   },
   keyboardView: {
@@ -170,7 +172,6 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   header: {
-    marginTop: 20,
     marginBottom: 40,
   },
   backButton: {
@@ -178,18 +179,15 @@ const styles = StyleSheet.create({
   },
   backButtonText: {
     fontSize: 16,
-    color: '#FF1493',
     fontWeight: '600',
   },
   title: {
     fontSize: 36,
     fontWeight: 'bold',
-    color: '#FF1493',
     marginBottom: 10,
   },
   subtitle: {
     fontSize: 16,
-    color: '#666666',
     marginTop: 5,
   },
   form: {
@@ -239,16 +237,13 @@ const styles = StyleSheet.create({
   },
   forgotPasswordText: {
     fontSize: 14,
-    color: '#FF1493',
     fontWeight: '600',
   },
   loginButton: {
-    backgroundColor: '#FF1493',
     paddingVertical: 16,
     borderRadius: 30,
     alignItems: 'center',
     marginBottom: 20,
-    shadowColor: '#FF1493',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
@@ -269,11 +264,9 @@ const styles = StyleSheet.create({
   },
   signupLinkText: {
     fontSize: 15,
-    color: '#666666',
   },
   signupLinkButton: {
     fontSize: 15,
-    color: '#FF1493',
     fontWeight: 'bold',
   },
 });

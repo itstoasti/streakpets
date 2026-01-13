@@ -1,46 +1,55 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import { useTheme } from '../../lib/themeContext';
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  const { theme } = useTheme();
 
   return (
-    <LinearGradient colors={['#FFE5EC', '#FFF0F5', '#FFFFFF']} style={styles.container}>
+    <LinearGradient colors={theme.gradient} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.content}>
           {/* App Logo/Title Section */}
           <View style={styles.headerSection}>
-            <Text style={styles.emoji}>💕</Text>
-            <Text style={styles.title}>Couples Pet</Text>
-            <Text style={styles.subtitle}>Care for your virtual pet together</Text>
+            <Image
+              source={require('../../assets/spark_logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={[styles.title, { color: theme.primary }]}>Spark</Text>
+            <Text style={[styles.subtitle, { color: theme.textSecondary }]}>Care for your virtual pet together</Text>
           </View>
 
           {/* Feature Highlights */}
           <View style={styles.featuresSection}>
-            <View style={styles.featureItem}>
+            <View style={[styles.featureItem, { backgroundColor: theme.surface }]}>
               <Text style={styles.featureEmoji}>🐾</Text>
-              <Text style={styles.featureText}>Raise a pet with your partner</Text>
+              <Text style={[styles.featureText, { color: theme.text }]}>Raise a pet with your partner</Text>
             </View>
-            <View style={styles.featureItem}>
+            <View style={[styles.featureItem, { backgroundColor: theme.surface }]}>
               <Text style={styles.featureEmoji}>🎨</Text>
-              <Text style={styles.featureText}>Draw together on the whiteboard</Text>
+              <Text style={[styles.featureText, { color: theme.text }]}>Draw together on the whiteboard</Text>
             </View>
-            <View style={styles.featureItem}>
+            <View style={[styles.featureItem, { backgroundColor: theme.surface }]}>
               <Text style={styles.featureEmoji}>📸</Text>
-              <Text style={styles.featureText}>Create shared memories</Text>
+              <Text style={[styles.featureText, { color: theme.text }]}>Create shared memories</Text>
             </View>
-            <View style={styles.featureItem}>
+            <View style={[styles.featureItem, { backgroundColor: theme.surface }]}>
               <Text style={styles.featureEmoji}>🔥</Text>
-              <Text style={styles.featureText}>Build streaks & earn rewards</Text>
+              <Text style={[styles.featureText, { color: theme.text }]}>Build streaks & earn rewards</Text>
             </View>
           </View>
 
           {/* Action Buttons */}
           <View style={styles.buttonSection}>
             <TouchableOpacity
-              style={styles.primaryButton}
+              style={[styles.primaryButton, {
+                backgroundColor: theme.primary,
+                shadowColor: theme.primary,
+              }]}
               onPress={() => router.push('/(auth)/signup')}
               activeOpacity={0.8}
             >
@@ -48,11 +57,11 @@ export default function WelcomeScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.secondaryButton}
+              style={[styles.secondaryButton, { borderColor: theme.primary }]}
               onPress={() => router.push('/(auth)/login')}
               activeOpacity={0.8}
             >
-              <Text style={styles.secondaryButtonText}>I already have an account</Text>
+              <Text style={[styles.secondaryButtonText, { color: theme.primary }]}>I already have an account</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -79,20 +88,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 40,
   },
-  emoji: {
-    fontSize: 80,
+  logo: {
+    width: 120,
+    height: 120,
     marginBottom: 20,
   },
   title: {
     fontSize: 40,
     fontWeight: 'bold',
-    color: '#FF1493',
     marginBottom: 10,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: 18,
-    color: '#999999',
     textAlign: 'center',
     marginTop: 10,
   },
@@ -104,7 +112,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
     padding: 15,
     borderRadius: 12,
   },
@@ -114,18 +121,15 @@ const styles = StyleSheet.create({
   },
   featureText: {
     fontSize: 16,
-    color: '#333333',
     flex: 1,
   },
   buttonSection: {
     gap: 15,
   },
   primaryButton: {
-    backgroundColor: '#FF1493',
     paddingVertical: 18,
     borderRadius: 30,
     alignItems: 'center',
-    shadowColor: '#FF1493',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
@@ -142,10 +146,8 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FF1493',
   },
   secondaryButtonText: {
-    color: '#FF1493',
     fontSize: 16,
     fontWeight: '600',
   },

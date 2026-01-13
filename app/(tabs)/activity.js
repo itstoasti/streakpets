@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Image,
   SafeAreaView,
   InteractionManager,
+  TextInput,
 } from 'react-native';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useAuth } from '../../lib/authContext';
@@ -22,8 +23,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updateGalleryWidget } from '../../lib/widgetHelper';
 import { SkiaDrawingCanvas } from '../components/SkiaDrawingCanvas';
 import { File, Paths } from 'expo-file-system';
-import { getMyPendingTurns, createGame, updateGameState } from '../../lib/gameHelper';
+import { getMyPendingTurns, createGame, updateGameState, getActiveGame, endGame } from '../../lib/gameHelper';
 import { notifyGameStarted } from '../../lib/notificationHelper';
+import { getRandomQuestions } from '../../lib/questionsHelper';
+import { TriviaGame } from '../../components/games/TriviaGame';
+import { WouldYouRatherGame } from '../../components/games/WouldYouRatherGame';
+import { WhosMoreLikelyGame } from '../../components/games/WhosMoreLikelyGame';
+import { useTheme } from '../../lib/themeContext';
+import { useInterstitialAd } from '../../lib/interstitialAds';
 
 // Custom Slider Component
 function CustomSlider({ value, onValueChange, minimumValue, maximumValue, step, style }) {
@@ -83,6 +90,8 @@ function CustomSlider({ value, onValueChange, minimumValue, maximumValue, step, 
 }
 
 export default function ActivityScreen() {
+  const { theme } = useTheme();
+  const styles = useMemo(() => getStyles(theme), [theme]);
   const { user } = useAuth();
   const userId = user?.id;
   const isFocused = useIsFocused();
@@ -94,10 +103,15 @@ export default function ActivityScreen() {
   const [showWhiteboard, setShowWhiteboard] = useState(false);
   const [showConnectFour, setShowConnectFour] = useState(false);
   const [showReversi, setShowReversi] = useState(false);
+  const [showCheckers, setShowCheckers] = useState(false);
+  const [showMemoryMatch, setShowMemoryMatch] = useState(false);
   const [showWouldYouRather, setShowWouldYouRather] = useState(false);
   const [showWhosMoreLikely, setShowWhosMoreLikely] = useState(false);
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
   const [pendingGames, setPendingGames] = useState(new Set());
+
+  // Interstitial ad hook - shows ads after game completion (max 1 per 5 mins)
+  const { showAdIfAllowed } = useInterstitialAd();
 
   useEffect(() => {
     if (isFocused && user) {
@@ -296,40 +310,40 @@ export default function ActivityScreen() {
         return;
       }
 
-    if (isSupabaseConfigured()) {
-      try {
-        const { data: coupleData, error } = await supabase
-          .from('couples')
-          .select('*')
-          .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
-          .order('created_at', { ascending: false })
-          .limit(1);
+      if (isSupabaseConfigured()) {
+        try {
+          const { data: coupleData, error } = await supabase
+            .from('couples')
+            .select('*')
+            .or(`auth_user1_id.eq.${user.id},auth_user2_id.eq.${user.id}`)
+            .order('created_at', { ascending: false })
+            .limit(1);
 
-        if (error) {
-          console.log('Supabase query error (using local mode):', error.message);
+          if (error) {
+            console.log('Supabase query error (using local mode):', error.message);
+            // Fallback to local mode
+            const localCouple = await import('../../lib/storage').then(m => m.getCoupleData());
+            if (localCouple) {
+              setCouple(localCouple);
+            }
+          } else if (coupleData && coupleData.length > 0) {
+            setCouple(coupleData[0]);
+          }
+        } catch (error) {
+          console.log('Supabase error (using local mode):', error.message);
           // Fallback to local mode
           const localCouple = await import('../../lib/storage').then(m => m.getCoupleData());
           if (localCouple) {
             setCouple(localCouple);
           }
-        } else if (coupleData && coupleData.length > 0) {
-          setCouple(coupleData[0]);
         }
-      } catch (error) {
-        console.log('Supabase error (using local mode):', error.message);
-        // Fallback to local mode
+      } else {
+        // Local mode
         const localCouple = await import('../../lib/storage').then(m => m.getCoupleData());
         if (localCouple) {
           setCouple(localCouple);
         }
       }
-    } else {
-      // Local mode
-      const localCouple = await import('../../lib/storage').then(m => m.getCoupleData());
-      if (localCouple) {
-        setCouple(localCouple);
-      }
-    }
     } catch (error) {
       console.log('Error loading couple data:', error.message);
     }
@@ -406,7 +420,7 @@ export default function ActivityScreen() {
   // Category Selection View
   if (!selectedCategory) {
     return (
-      <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+      <LinearGradient colors={theme.gradient} style={styles.container}>
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.title}>Choose an Activity</Text>
           <Text style={styles.subtitle}>Keep your streak alive and your pet happy!</Text>
@@ -453,7 +467,7 @@ export default function ActivityScreen() {
 
   // Activities List View
   return (
-    <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+    <LinearGradient colors={theme.gradient} style={styles.container}>
       <View style={styles.backButtonContainer}>
         <TouchableOpacity
           style={styles.backButton}
@@ -543,6 +557,44 @@ export default function ActivityScreen() {
                 </View>
               )}
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.gameCard,
+                pendingGames.has('checkers') && styles.gameCardPending
+              ]}
+              onPress={() => setShowCheckers(true)}
+            >
+              <View style={styles.gameCardContent}>
+                <Text style={styles.gameEmoji}>⭕⚫</Text>
+                <Text style={styles.gameName}>Checkers</Text>
+                <Text style={styles.gameReward}>+5 Happiness</Text>
+              </View>
+              {pendingGames.has('checkers') && (
+                <View style={styles.yourTurnBadge}>
+                  <Text style={styles.yourTurnText}>Your Turn!</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.gameCard,
+                pendingGames.has('memorymatch') && styles.gameCardPending
+              ]}
+              onPress={() => setShowMemoryMatch(true)}
+            >
+              <View style={styles.gameCardContent}>
+                <Text style={styles.gameEmoji}>🎮🎯</Text>
+                <Text style={styles.gameName}>Memory Match</Text>
+                <Text style={styles.gameReward}>+5 Happiness</Text>
+              </View>
+              {pendingGames.has('memorymatch') && (
+                <View style={styles.yourTurnBadge}>
+                  <Text style={styles.yourTurnText}>Your Turn!</Text>
+                </View>
+              )}
+            </TouchableOpacity>
           </>
         )}
 
@@ -552,7 +604,11 @@ export default function ActivityScreen() {
 
             <TouchableOpacity
               style={styles.gameCard}
-              onPress={() => setShowTrivia(true)}
+              onPress={() => {
+                console.log('🎮 Trivia button clicked!');
+                setShowTrivia(true);
+                console.log('🎮 setShowTrivia(true) called');
+              }}
             >
               <Text style={styles.gameEmoji}>💭❤️</Text>
               <Text style={styles.gameName}>Couple Trivia</Text>
@@ -624,22 +680,35 @@ export default function ActivityScreen() {
             const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
             setPendingGames(updatedGameTypes);
 
-            setTimeout(() => {
+            setTimeout(async () => {
               setShowTicTacToe(false);
               addHappiness(5, 'playing Tic Tac Toe', isWinner);
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
             }, 100);
           }}
         />
       </Modal>
 
       {/* Trivia Modal */}
-      <Modal visible={showTrivia} animationType="slide" transparent>
+      {showTrivia && console.log('🎮 Rendering Trivia Modal - showTrivia:', showTrivia)}
+      <Modal visible={showTrivia} animationType="slide">
+        {showTrivia && console.log('🎮 Inside Modal - about to render TriviaGame')}
         <TriviaGame
-          onClose={() => setShowTrivia(false)}
+          couple={couple}
+          userId={userId}
+          onClose={() => {
+            console.log('🎮 TriviaGame onClose called');
+            setShowTrivia(false);
+          }}
           onComplete={() => {
-            setTimeout(() => {
+            console.log('🎮 TriviaGame onComplete called');
+            setTimeout(async () => {
               setShowTrivia(false);
               addHappiness(5, 'playing Couple Trivia');
+              refreshPendingTurns();
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
             }, 100);
           }}
         />
@@ -663,9 +732,11 @@ export default function ActivityScreen() {
             const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
             setPendingGames(updatedGameTypes);
 
-            setTimeout(() => {
+            setTimeout(async () => {
               setShowDotsAndBoxes(false);
               addHappiness(5, 'playing Dots and Boxes', isWinner);
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
             }, 100);
           }}
         />
@@ -704,9 +775,11 @@ export default function ActivityScreen() {
             const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
             setPendingGames(updatedGameTypes);
 
-            setTimeout(() => {
+            setTimeout(async () => {
               setShowConnectFour(false);
               addHappiness(5, 'playing Connect Four', isWinner);
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
             }, 100);
           }}
         />
@@ -730,35 +803,99 @@ export default function ActivityScreen() {
             const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
             setPendingGames(updatedGameTypes);
 
-            setTimeout(() => {
+            setTimeout(async () => {
               setShowReversi(false);
               addHappiness(5, 'playing Reversi', isWinner);
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
+            }, 100);
+          }}
+        />
+      </Modal>
+
+      {/* Checkers Modal */}
+      <Modal visible={showCheckers} animationType="slide" transparent>
+        <CheckersGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowCheckers(false)}
+          onTurnComplete={async () => {
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+          }}
+          onComplete={async (isWinner) => {
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+
+            setTimeout(async () => {
+              setShowCheckers(false);
+              addHappiness(5, 'playing Checkers', isWinner);
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
+            }, 100);
+          }}
+        />
+      </Modal>
+
+      {/* Memory Match Modal */}
+      <Modal visible={showMemoryMatch} animationType="slide" transparent>
+        <MemoryMatchGame
+          couple={couple}
+          userId={userId}
+          onClose={() => setShowMemoryMatch(false)}
+          onTurnComplete={async () => {
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+          }}
+          onComplete={async (isWinner) => {
+            const updatedTurns = await getMyPendingTurns(couple.id, userId);
+            const updatedGameTypes = new Set(updatedTurns.map(game => game.game_type));
+            setPendingGames(updatedGameTypes);
+
+            setTimeout(async () => {
+              setShowMemoryMatch(false);
+              addHappiness(5, 'playing Memory Match', isWinner);
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
             }, 100);
           }}
         />
       </Modal>
 
       {/* Would You Rather Modal */}
-      <Modal visible={showWouldYouRather} animationType="slide" transparent>
+      <Modal visible={showWouldYouRather} animationType="slide">
         <WouldYouRatherGame
+          couple={couple}
+          userId={userId}
           onClose={() => setShowWouldYouRather(false)}
           onComplete={() => {
-            setTimeout(() => {
+            setTimeout(async () => {
               setShowWouldYouRather(false);
               addHappiness(5, 'playing Would You Rather');
+              refreshPendingTurns();
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
             }, 100);
           }}
         />
       </Modal>
 
       {/* Who's More Likely Modal */}
-      <Modal visible={showWhosMoreLikely} animationType="slide" transparent>
+      <Modal visible={showWhosMoreLikely} animationType="slide">
         <WhosMoreLikelyGame
+          couple={couple}
+          userId={userId}
           onClose={() => setShowWhosMoreLikely(false)}
           onComplete={() => {
-            setTimeout(() => {
+            setTimeout(async () => {
               setShowWhosMoreLikely(false);
               addHappiness(5, "playing Who's More Likely To");
+              refreshPendingTurns();
+              // Show interstitial ad after game (respects 5-min frequency cap)
+              await showAdIfAllowed();
             }, 100);
           }}
         />
@@ -983,8 +1120,8 @@ export function TicTacToeGame({ couple, userId, onClose, onTurnComplete, onCompl
               ? "It's a Draw!"
               : `${winner} Wins!`
             : isMyTurn
-            ? "Your Turn!"
-            : `${partnerName}'s Turn`}
+              ? "Your Turn!"
+              : `${partnerName}'s Turn`}
         </Text>
 
         <View style={styles.board}>
@@ -1038,103 +1175,6 @@ export function TicTacToeGame({ couple, userId, onClose, onTurnComplete, onCompl
           </View>
         </View>
       </Modal>
-    </View>
-  );
-}
-
-function TriviaGame({ onClose, onComplete }) {
-  const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [score, setScore] = useState(0);
-  const [selectedAnswer, setSelectedAnswer] = useState(null);
-  const [showResult, setShowResult] = useState(false);
-
-  const questions = [
-    {
-      question: "What's your partner's favorite color?",
-      options: ['Red', 'Blue', 'Green', 'Yellow'],
-      info: 'Remember their answer!',
-    },
-    {
-      question: "What's your partner's dream vacation destination?",
-      options: ['Beach', 'Mountains', 'City', 'Countryside'],
-      info: 'Plan your next trip together!',
-    },
-    {
-      question: "What's your partner's favorite food?",
-      options: ['Pizza', 'Sushi', 'Pasta', 'Burgers'],
-      info: "Date night idea!",
-    },
-    {
-      question: "What's your partner's love language?",
-      options: ['Words', 'Touch', 'Gifts', 'Time'],
-      info: 'Express love their way!',
-    },
-    {
-      question: "What's your partner's favorite movie genre?",
-      options: ['Romance', 'Action', 'Comedy', 'Horror'],
-      info: 'Movie night sorted!',
-    },
-  ];
-
-  function handleAnswer(answer) {
-    setSelectedAnswer(answer);
-    setShowResult(true);
-    setScore(score + 1);
-  }
-
-  function nextQuestion() {
-    if (currentQuestion < questions.length - 1) {
-      setCurrentQuestion(currentQuestion + 1);
-      setSelectedAnswer(null);
-      setShowResult(false);
-    } else {
-      onComplete();
-    }
-  }
-
-  const question = questions[currentQuestion];
-
-  return (
-    <View style={styles.modalContainer}>
-      <View style={styles.gameModalContent}>
-        <Text style={styles.gameModalTitle}>Couple Trivia</Text>
-        <Text style={styles.triviaProgress}>
-          Question {currentQuestion + 1} of {questions.length}
-        </Text>
-
-        <Text style={styles.triviaQuestion}>{question.question}</Text>
-
-        {!showResult ? (
-          <View style={styles.triviaOptions}>
-            {question.options.map((option, index) => (
-              <TouchableOpacity
-                key={index}
-                style={styles.triviaOption}
-                onPress={() => handleAnswer(option)}
-              >
-                <Text style={styles.triviaOptionText}>{option}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        ) : (
-          <View style={styles.triviaResult}>
-            <Text style={styles.triviaResultText}>You selected: {selectedAnswer}</Text>
-            <Text style={styles.triviaInfo}>{question.info}</Text>
-            <TouchableOpacity style={styles.nextButton} onPress={nextQuestion}>
-              <Text style={styles.nextButtonText}>
-                {currentQuestion < questions.length - 1 ? 'Next Question' : 'Finish'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <TouchableOpacity
-          style={[styles.gameButton, styles.closeButton, { marginTop: 20 }]}
-          onPress={onClose}
-        >
-          <Text style={styles.gameButtonText}>Close</Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }
@@ -1287,7 +1327,7 @@ export function DotsAndBoxesGame({ couple, userId, onClose, onTurnComplete, onCo
 
     if (result.isGameOver) {
       const winner = result.newScores.player1 > result.newScores.player2 ? 'Player 1' :
-                     result.newScores.player2 > result.newScores.player1 ? 'Player 2' : 'Draw';
+        result.newScores.player2 > result.newScores.player1 ? 'Player 2' : 'Draw';
       updates.winner = winner;
       updates.is_active = false;
     }
@@ -1330,7 +1370,7 @@ export function DotsAndBoxesGame({ couple, userId, onClose, onTurnComplete, onCo
 
     if (result.isGameOver) {
       const winner = result.newScores.player1 > result.newScores.player2 ? 'Player 1' :
-                     result.newScores.player2 > result.newScores.player1 ? 'Player 2' : 'Draw';
+        result.newScores.player2 > result.newScores.player1 ? 'Player 2' : 'Draw';
       updates.winner = winner;
       updates.is_active = false;
     }
@@ -1497,8 +1537,8 @@ export function DotsAndBoxesGame({ couple, userId, onClose, onTurnComplete, onCo
             {scores.player1 > scores.player2
               ? '🟦 Player 1 Wins!'
               : scores.player2 > scores.player1
-              ? '🟥 Player 2 Wins!'
-              : "It's a Tie!"}
+                ? '🟥 Player 2 Wins!'
+                : "It's a Tie!"}
           </Text>
         )}
 
@@ -1572,7 +1612,7 @@ export function DotsAndBoxesGame({ couple, userId, onClose, onTurnComplete, onCo
               style={[styles.gameButton, styles.completeButton]}
               onPress={() => {
                 const isWinner = (myPlayer === 'player1' && scores.player1 > scores.player2) ||
-                                 (myPlayer === 'player2' && scores.player2 > scores.player1);
+                  (myPlayer === 'player2' && scores.player2 > scores.player1);
                 onComplete(isWinner);
               }}
             >
@@ -1764,9 +1804,9 @@ export function ConnectFourGame({ couple, userId, onClose, onTurnComplete, onCom
     // Check horizontal
     for (let c = 0; c <= COLS - 4; c++) {
       if (board[row][c] === player &&
-          board[row][c + 1] === player &&
-          board[row][c + 2] === player &&
-          board[row][c + 3] === player) {
+        board[row][c + 1] === player &&
+        board[row][c + 2] === player &&
+        board[row][c + 3] === player) {
         return [[row, c], [row, c + 1], [row, c + 2], [row, c + 3]];
       }
     }
@@ -1774,9 +1814,9 @@ export function ConnectFourGame({ couple, userId, onClose, onTurnComplete, onCom
     // Check vertical
     for (let r = 0; r <= ROWS - 4; r++) {
       if (board[r][col] === player &&
-          board[r + 1][col] === player &&
-          board[r + 2][col] === player &&
-          board[r + 3][col] === player) {
+        board[r + 1][col] === player &&
+        board[r + 2][col] === player &&
+        board[r + 3][col] === player) {
         return [[r, col], [r + 1, col], [r + 2, col], [r + 3, col]];
       }
     }
@@ -1785,9 +1825,9 @@ export function ConnectFourGame({ couple, userId, onClose, onTurnComplete, onCom
     for (let r = 3; r < ROWS; r++) {
       for (let c = 0; c <= COLS - 4; c++) {
         if (board[r][c] === player &&
-            board[r - 1][c + 1] === player &&
-            board[r - 2][c + 2] === player &&
-            board[r - 3][c + 3] === player) {
+          board[r - 1][c + 1] === player &&
+          board[r - 2][c + 2] === player &&
+          board[r - 3][c + 3] === player) {
           return [[r, c], [r - 1, c + 1], [r - 2, c + 2], [r - 3, c + 3]];
         }
       }
@@ -1797,9 +1837,9 @@ export function ConnectFourGame({ couple, userId, onClose, onTurnComplete, onCom
     for (let r = 0; r <= ROWS - 4; r++) {
       for (let c = 0; c <= COLS - 4; c++) {
         if (board[r][c] === player &&
-            board[r + 1][c + 1] === player &&
-            board[r + 2][c + 2] === player &&
-            board[r + 3][c + 3] === player) {
+          board[r + 1][c + 1] === player &&
+          board[r + 2][c + 2] === player &&
+          board[r + 3][c + 3] === player) {
           return [[r, c], [r + 1, c + 1], [r + 2, c + 2], [r + 3, c + 3]];
         }
       }
@@ -1858,8 +1898,8 @@ export function ConnectFourGame({ couple, userId, onClose, onTurnComplete, onCom
               ? "It's a Draw!"
               : `${winner} Wins!`
             : isMyTurn
-            ? "Your Turn!"
-            : `${partnerName}'s Turn`}
+              ? "Your Turn!"
+              : `${partnerName}'s Turn`}
         </Text>
 
         <View style={styles.connectFourBoard}>
@@ -1878,7 +1918,7 @@ export function ConnectFourGame({ couple, userId, onClose, onTurnComplete, onCom
                   {cell && (
                     <View style={[
                       styles.connectFourPiece,
-                      { backgroundColor: cell === 1 ? '#FF1493' : '#FFD700' }
+                      { backgroundColor: cell === 1 ? theme.primary : '#FFD700' }
                     ]} />
                   )}
                 </TouchableOpacity>
@@ -2109,8 +2149,8 @@ export function ReversiGame({ couple, userId, onClose, onTurnComplete, onComplet
     const opponent = player === 1 ? 2 : 1;
     const directions = [
       [-1, -1], [-1, 0], [-1, 1],
-      [0, -1],           [0, 1],
-      [1, -1],  [1, 0],  [1, 1]
+      [0, -1], [0, 1],
+      [1, -1], [1, 0], [1, 1]
     ];
 
     for (let row = 0; row < SIZE; row++) {
@@ -2151,8 +2191,8 @@ export function ReversiGame({ couple, userId, onClose, onTurnComplete, onComplet
     const opponent = player === 1 ? 2 : 1;
     const directions = [
       [-1, -1], [-1, 0], [-1, 1],
-      [0, -1],           [0, 1],
-      [1, -1],  [1, 0],  [1, 1]
+      [0, -1], [0, 1],
+      [1, -1], [1, 0], [1, 1]
     ];
     const toFlip = [];
 
@@ -2293,8 +2333,8 @@ export function ReversiGame({ couple, userId, onClose, onTurnComplete, onComplet
               {scores.black > scores.white
                 ? '⚫ Black Wins!'
                 : scores.white > scores.black
-                ? '⚪ White Wins!'
-                : "It's a Tie!"}
+                  ? '⚪ White Wins!'
+                  : "It's a Tie!"}
             </Text>
           )}
 
@@ -2337,7 +2377,7 @@ export function ReversiGame({ couple, userId, onClose, onTurnComplete, onComplet
                 style={[styles.gameButton, styles.completeButton]}
                 onPress={() => {
                   const isWinner = (myPlayer === 'player1' && scores.black > scores.white) ||
-                                   (myPlayer === 'player2' && scores.white > scores.black);
+                    (myPlayer === 'player2' && scores.white > scores.black);
                   onComplete(isWinner);
                 }}
               >
@@ -2374,419 +2414,11 @@ export function ReversiGame({ couple, userId, onClose, onTurnComplete, onComplet
   );
 }
 
-function WouldYouRatherGame({ onClose, onComplete }) {
-  const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [currentPlayer, setCurrentPlayer] = useState(1); // 1 or 2
-  const [partner1Answers, setPartner1Answers] = useState([]);
-  const [partner2Answers, setPartner2Answers] = useState([]);
-  const [showingResult, setShowingResult] = useState(false);
-  const [showFinalResults, setShowFinalResults] = useState(false);
-
-  const questions = [
-    {
-      optionA: 'Always know what your partner is thinking',
-      optionB: 'Always know where your partner is',
-    },
-    {
-      optionA: 'Go on a romantic beach vacation',
-      optionB: 'Go on an adventurous mountain trip',
-    },
-    {
-      optionA: 'Have a fancy dinner date every week',
-      optionB: 'Have a cozy movie night at home every week',
-    },
-    {
-      optionA: 'Relive your first date',
-      optionB: 'Get a preview of your future together',
-    },
-    {
-      optionA: 'Have breakfast in bed together',
-      optionB: 'Watch the sunset together',
-    },
-    {
-      optionA: 'Be able to cook any meal perfectly',
-      optionB: 'Be able to dance any dance perfectly',
-    },
-    {
-      optionA: 'Have matching tattoos',
-      optionB: 'Have matching outfits',
-    },
-    {
-      optionA: 'Go to a concert together',
-      optionB: 'Go to a sports game together',
-    },
-  ];
-
-  function handleAnswer(answer) {
-    if (currentPlayer === 1) {
-      setPartner1Answers([...partner1Answers, answer]);
-      setShowingResult(true);
-    } else {
-      setPartner2Answers([...partner2Answers, answer]);
-      setShowingResult(true);
-    }
-  }
-
-  function nextStep() {
-    if (currentPlayer === 1) {
-      // Partner 1 answered, now Partner 2's turn
-      setCurrentPlayer(2);
-      setShowingResult(false);
-    } else {
-      // Both answered, move to next question or show results
-      if (currentQuestion < questions.length - 1) {
-        setCurrentQuestion(currentQuestion + 1);
-        setCurrentPlayer(1);
-        setShowingResult(false);
-      } else {
-        setShowFinalResults(true);
-      }
-    }
-  }
-
-  const question = questions[currentQuestion];
-
-  if (showFinalResults) {
-    const matchCount = partner1Answers.filter((ans, idx) => ans === partner2Answers[idx]).length;
-    const matchPercentage = Math.round((matchCount / questions.length) * 100);
-
-    return (
-      <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.resultsFullContainer}>
-        <SafeAreaView style={styles.resultsSafeArea}>
-          <View style={styles.resultsHeaderNew}>
-            <Text style={styles.resultsTitleNew}>Your Results 💕</Text>
-            <View style={styles.resultsStatsBox}>
-              <Text style={styles.resultsStatsNumber}>{matchPercentage}%</Text>
-              <Text style={styles.resultsStatsLabel}>Agreement</Text>
-              <Text style={styles.resultsStatsDetail}>
-                {matchCount} out of {questions.length} matches
-              </Text>
-            </View>
-          </View>
-
-          <ScrollView
-            style={styles.resultsScrollNew}
-            contentContainerStyle={styles.resultsScrollContentNew}
-            showsVerticalScrollIndicator={false}
-          >
-            {questions.map((q, index) => {
-              const isMatch = partner1Answers[index] === partner2Answers[index];
-              return (
-                <View key={index} style={styles.resultCardNew}>
-                  <View style={styles.resultCardHeader}>
-                    <Text style={styles.resultCardNumber}>Q{index + 1}</Text>
-                    {isMatch && <Text style={styles.resultMatchBadge}>✨ Match!</Text>}
-                  </View>
-
-                  <Text style={styles.resultQuestionNew}>Would you rather...</Text>
-
-                  <View style={styles.resultAnswersNew}>
-                    <View style={[styles.resultAnswerBox, isMatch && styles.resultAnswerBoxMatch]}>
-                      <View style={styles.resultAnswerHeader}>
-                        <View style={styles.resultAvatarP1}>
-                          <Text style={styles.resultAvatarText}>P1</Text>
-                        </View>
-                        <Text style={styles.resultAnswerChoice}>Option {partner1Answers[index]}</Text>
-                      </View>
-                      <Text style={styles.resultAnswerTextNew}>
-                        {partner1Answers[index] === 'A' ? q.optionA : q.optionB}
-                      </Text>
-                    </View>
-
-                    <View style={[styles.resultAnswerBox, isMatch && styles.resultAnswerBoxMatch]}>
-                      <View style={styles.resultAnswerHeader}>
-                        <View style={styles.resultAvatarP2}>
-                          <Text style={styles.resultAvatarText}>P2</Text>
-                        </View>
-                        <Text style={styles.resultAnswerChoice}>Option {partner2Answers[index]}</Text>
-                      </View>
-                      <Text style={styles.resultAnswerTextNew}>
-                        {partner2Answers[index] === 'A' ? q.optionA : q.optionB}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
-
-            <View style={styles.resultsButtonsNew}>
-              <TouchableOpacity
-                style={styles.resultsCompleteBtn}
-                onPress={onComplete}
-              >
-                <Text style={styles.resultsCompleteBtnText}>Complete & Earn Coins</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.resultsCloseBtn}
-                onPress={onClose}
-              >
-                <Text style={styles.resultsCloseBtnText}>Close</Text>
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
-        </SafeAreaView>
-      </LinearGradient>
-    );
-  }
-
-  return (
-    <View style={styles.modalContainer}>
-      <View style={styles.gameModalContent}>
-        <Text style={styles.gameModalTitle}>Would You Rather</Text>
-        <Text style={styles.triviaProgress}>
-          Question {currentQuestion + 1} of {questions.length}
-        </Text>
-
-        <Text style={styles.currentPlayerText}>
-          {currentPlayer === 1 ? '👤 Partner 1' : '👤 Partner 2'}'s Turn
-        </Text>
-
-        <Text style={styles.wouldYouRatherPrompt}>Would you rather...</Text>
-
-        {!showingResult ? (
-          <View style={styles.triviaOptions}>
-            <TouchableOpacity
-              style={styles.wouldYouRatherOption}
-              onPress={() => handleAnswer('A')}
-            >
-              <Text style={styles.wouldYouRatherLabel}>Option A</Text>
-              <Text style={styles.triviaOptionText}>{question.optionA}</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.wouldYouRatherOr}>OR</Text>
-
-            <TouchableOpacity
-              style={styles.wouldYouRatherOption}
-              onPress={() => handleAnswer('B')}
-            >
-              <Text style={styles.wouldYouRatherLabel}>Option B</Text>
-              <Text style={styles.triviaOptionText}>{question.optionB}</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.triviaResult}>
-            <Text style={styles.triviaResultText}>
-              {currentPlayer === 1 ? 'Partner 1' : 'Partner 2'} chose: Option{' '}
-              {currentPlayer === 1 ? partner1Answers[currentQuestion] : partner2Answers[currentQuestion]}
-            </Text>
-            <Text style={styles.triviaInfo}>
-              {currentPlayer === 1
-                ? partner1Answers[currentQuestion] === 'A' ? question.optionA : question.optionB
-                : partner2Answers[currentQuestion] === 'A' ? question.optionA : question.optionB}
-            </Text>
-            <TouchableOpacity style={styles.nextButton} onPress={nextStep}>
-              <Text style={styles.nextButtonText}>
-                {currentPlayer === 1 ? "Partner 2's Turn" : currentQuestion < questions.length - 1 ? 'Next Question' : 'See Results'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <TouchableOpacity
-          style={[styles.gameButton, styles.closeButton, { marginTop: 20 }]}
-          onPress={onClose}
-        >
-          <Text style={styles.gameButtonText}>Close</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
-
-function WhosMoreLikelyGame({ onClose, onComplete }) {
-  const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [currentPlayer, setCurrentPlayer] = useState(1); // 1 or 2
-  const [partner1Answers, setPartner1Answers] = useState([]);
-  const [partner2Answers, setPartner2Answers] = useState([]);
-  const [showingResult, setShowingResult] = useState(false);
-  const [showFinalResults, setShowFinalResults] = useState(false);
-
-  const questions = [
-    "Who's more likely to forget their keys?",
-    "Who's more likely to plan a surprise date?",
-    "Who's more likely to fall asleep during a movie?",
-    "Who's more likely to burn dinner?",
-    "Who's more likely to wake up first?",
-    "Who's more likely to get lost while driving?",
-    "Who's more likely to start a dance party?",
-    "Who's more likely to cry during a sad movie?",
-    "Who's more likely to check their phone first thing in the morning?",
-    "Who's more likely to suggest trying something new?",
-  ];
-
-  function handleAnswer(answer) {
-    if (currentPlayer === 1) {
-      setPartner1Answers([...partner1Answers, answer]);
-      setShowingResult(true);
-    } else {
-      setPartner2Answers([...partner2Answers, answer]);
-      setShowingResult(true);
-    }
-  }
-
-  function nextStep() {
-    if (currentPlayer === 1) {
-      // Partner 1 answered, now Partner 2's turn
-      setCurrentPlayer(2);
-      setShowingResult(false);
-    } else {
-      // Both answered, move to next question or show results
-      if (currentQuestion < questions.length - 1) {
-        setCurrentQuestion(currentQuestion + 1);
-        setCurrentPlayer(1);
-        setShowingResult(false);
-      } else {
-        setShowFinalResults(true);
-      }
-    }
-  }
-
-  if (showFinalResults) {
-    const matchCount = partner1Answers.filter((ans, idx) => ans === partner2Answers[idx]).length;
-    const matchPercentage = Math.round((matchCount / questions.length) * 100);
-
-    return (
-      <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.resultsFullContainer}>
-        <SafeAreaView style={styles.resultsSafeArea}>
-          <View style={styles.resultsHeaderNew}>
-            <Text style={styles.resultsTitleNew}>Your Results 💕</Text>
-            <View style={styles.resultsStatsBox}>
-              <Text style={styles.resultsStatsNumber}>{matchPercentage}%</Text>
-              <Text style={styles.resultsStatsLabel}>Agreement</Text>
-              <Text style={styles.resultsStatsDetail}>
-                {matchCount} out of {questions.length} matches
-              </Text>
-            </View>
-          </View>
-
-          <ScrollView
-            style={styles.resultsScrollNew}
-            contentContainerStyle={styles.resultsScrollContentNew}
-            showsVerticalScrollIndicator={false}
-          >
-            {questions.map((q, index) => {
-              const isMatch = partner1Answers[index] === partner2Answers[index];
-              return (
-                <View key={index} style={styles.resultCardNew}>
-                  <View style={styles.resultCardHeader}>
-                    <Text style={styles.resultCardNumber}>Q{index + 1}</Text>
-                    {isMatch && <Text style={styles.resultMatchBadge}>✨ Match!</Text>}
-                  </View>
-
-                  <Text style={styles.resultQuestionNew}>{q}</Text>
-
-                  <View style={styles.resultAnswersNew}>
-                    <View style={[styles.resultAnswerBox, isMatch && styles.resultAnswerBoxMatch]}>
-                      <View style={styles.resultAnswerHeader}>
-                        <View style={styles.resultAvatarP1}>
-                          <Text style={styles.resultAvatarText}>P1</Text>
-                        </View>
-                      </View>
-                      <Text style={styles.resultAnswerTextNew}>{partner1Answers[index]}</Text>
-                    </View>
-
-                    <View style={[styles.resultAnswerBox, isMatch && styles.resultAnswerBoxMatch]}>
-                      <View style={styles.resultAnswerHeader}>
-                        <View style={styles.resultAvatarP2}>
-                          <Text style={styles.resultAvatarText}>P2</Text>
-                        </View>
-                      </View>
-                      <Text style={styles.resultAnswerTextNew}>{partner2Answers[index]}</Text>
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
-
-            <View style={styles.resultsButtonsNew}>
-              <TouchableOpacity
-                style={styles.resultsCompleteBtn}
-                onPress={onComplete}
-              >
-                <Text style={styles.resultsCompleteBtnText}>Complete & Earn Coins</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.resultsCloseBtn}
-                onPress={onClose}
-              >
-                <Text style={styles.resultsCloseBtnText}>Close</Text>
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
-        </SafeAreaView>
-      </LinearGradient>
-    );
-  }
-
-  return (
-    <View style={styles.modalContainer}>
-      <View style={styles.gameModalContent}>
-        <Text style={styles.gameModalTitle}>Who's More Likely To?</Text>
-        <Text style={styles.triviaProgress}>
-          Question {currentQuestion + 1} of {questions.length}
-        </Text>
-
-        <Text style={styles.currentPlayerText}>
-          {currentPlayer === 1 ? '👤 Partner 1' : '👤 Partner 2'}'s Turn
-        </Text>
-
-        <Text style={styles.whosMoreLikelyQuestion}>{questions[currentQuestion]}</Text>
-
-        {!showingResult ? (
-          <View style={styles.triviaOptions}>
-            <TouchableOpacity
-              style={styles.whosMoreLikelyOption}
-              onPress={() => handleAnswer('Partner 1')}
-            >
-              <Text style={styles.whosMoreLikelyText}>👤 Partner 1</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.whosMoreLikelyOption}
-              onPress={() => handleAnswer('Partner 2')}
-            >
-              <Text style={styles.whosMoreLikelyText}>👤 Partner 2</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.whosMoreLikelyOption}
-              onPress={() => handleAnswer('Both Equally')}
-            >
-              <Text style={styles.whosMoreLikelyText}>👫 Both Equally</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.triviaResult}>
-            <Text style={styles.triviaResultText}>
-              {currentPlayer === 1 ? 'Partner 1' : 'Partner 2'} chose: {currentPlayer === 1 ? partner1Answers[currentQuestion] : partner2Answers[currentQuestion]}
-            </Text>
-            <Text style={styles.triviaInfo}>
-              Great choice! Discuss why you think so.
-            </Text>
-            <TouchableOpacity style={styles.nextButton} onPress={nextStep}>
-              <Text style={styles.nextButtonText}>
-                {currentPlayer === 1 ? "Partner 2's Turn" : currentQuestion < questions.length - 1 ? 'Next Question' : 'See Results'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <TouchableOpacity
-          style={[styles.gameButton, styles.closeButton, { marginTop: 20 }]}
-          onPress={onClose}
-        >
-          <Text style={styles.gameButtonText}>Close</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
-
 export function WhiteboardGame({ couple, userId, onClose, onComplete }) {
+  const { theme } = useTheme();
+  const styles = useMemo(() => getStyles(theme), [theme]);
   const [currentTab, setCurrentTab] = useState('canvas');
-  const [currentColor, setCurrentColor] = useState('#FF1493');
+  const [currentColor, setCurrentColor] = useState(theme.primary);
   const [brushSize, setBrushSize] = useState(4);
   const [isEraser, setIsEraser] = useState(false);
   const [backgroundColor, setBackgroundColor] = useState('white');
@@ -3259,7 +2891,7 @@ export function WhiteboardGame({ couple, userId, onClose, onComplete }) {
                     width: Math.max(8, brushSize),
                     height: Math.max(8, brushSize),
                     borderRadius: Math.max(4, brushSize / 2),
-                    backgroundColor: isEraser ? '#FFE5EC' : currentColor
+                    backgroundColor: isEraser ? theme.backgroundSecondary : currentColor
                   }]} />
                 </View>
               </TouchableOpacity>
@@ -3310,60 +2942,60 @@ export function WhiteboardGame({ couple, userId, onClose, onComplete }) {
               const scale = Math.min(scaleX, scaleY); // Use minimum to fit entire drawing
 
               return (
-              <View key={drawing.id} style={styles.whiteboardGalleryItem}>
-                <TouchableOpacity
-                  onPress={() => setSelectedDrawing(drawing)}
-                  activeOpacity={0.7}
-                >
-                  <View style={[
-                    styles.whiteboardGalleryCanvas,
-                    { backgroundColor: drawing.backgroundColor || 'white' }
-                  ]}>
-                    {drawing.image ? (
-                      <Image
-                        source={{ uri: `data:image/png;base64,${drawing.image}` }}
-                        style={{ width: '100%', height: '100%' }}
-                        resizeMode="contain"
-                      />
-                    ) : drawing.publicUrl ? (
-                      <Image
-                        source={{ uri: drawing.publicUrl }}
-                        style={{ width: '100%', height: '100%' }}
-                        resizeMode="contain"
-                      />
-                    ) : (
-                      drawing.paths?.map((pathData, index) => renderPath(pathData, index, scale, scale))
-                    )}
-                  </View>
-                </TouchableOpacity>
-                <View style={styles.whiteboardGalleryFooter}>
-                  <Text style={styles.whiteboardGalleryDate}>
-                    {new Date(drawing.createdAt).toLocaleDateString()}
-                  </Text>
-                  <View style={{ flexDirection: 'row', gap: 10 }}>
-                    <TouchableOpacity
-                      style={[
-                        styles.whiteboardWidgetButton,
-                        widgetDrawingId === drawing.id && styles.whiteboardWidgetButtonActive
-                      ]}
-                      onPress={() => setAsWidgetDrawing(drawing.id)}
-                    >
-                      <Text style={[
-                        styles.whiteboardWidgetText,
-                        widgetDrawingId === drawing.id && { color: 'white' }
-                      ]}>
-                        {widgetDrawingId === drawing.id ? '✓ Widget' : 'Set Widget'}
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.whiteboardDeleteButton}
-                      onPress={() => deleteDrawing(drawing.id)}
-                    >
-                      <Text style={styles.whiteboardDeleteText}>Delete</Text>
-                    </TouchableOpacity>
+                <View key={drawing.id} style={styles.whiteboardGalleryItem}>
+                  <TouchableOpacity
+                    onPress={() => setSelectedDrawing(drawing)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={[
+                      styles.whiteboardGalleryCanvas,
+                      { backgroundColor: drawing.backgroundColor || 'white' }
+                    ]}>
+                      {drawing.image ? (
+                        <Image
+                          source={{ uri: `data:image/png;base64,${drawing.image}` }}
+                          style={{ width: '100%', height: '100%' }}
+                          resizeMode="contain"
+                        />
+                      ) : drawing.publicUrl ? (
+                        <Image
+                          source={{ uri: drawing.publicUrl }}
+                          style={{ width: '100%', height: '100%' }}
+                          resizeMode="contain"
+                        />
+                      ) : (
+                        drawing.paths?.map((pathData, index) => renderPath(pathData, index, scale, scale))
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                  <View style={styles.whiteboardGalleryFooter}>
+                    <Text style={styles.whiteboardGalleryDate}>
+                      {new Date(drawing.createdAt).toLocaleDateString()}
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <TouchableOpacity
+                        style={[
+                          styles.whiteboardWidgetButton,
+                          widgetDrawingId === drawing.id && styles.whiteboardWidgetButtonActive
+                        ]}
+                        onPress={() => setAsWidgetDrawing(drawing.id)}
+                      >
+                        <Text style={[
+                          styles.whiteboardWidgetText,
+                          widgetDrawingId === drawing.id && { color: 'white' }
+                        ]}>
+                          {widgetDrawingId === drawing.id ? '✓ Widget' : 'Set Widget'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.whiteboardDeleteButton}
+                        onPress={() => deleteDrawing(drawing.id)}
+                      >
+                        <Text style={styles.whiteboardDeleteText}>Delete</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
-              </View>
               );
             })
           )}
@@ -3465,7 +3097,7 @@ export function WhiteboardGame({ couple, userId, onClose, onComplete }) {
                   width: Math.max(8, brushSize),
                   height: Math.max(8, brushSize),
                   borderRadius: Math.max(4, brushSize / 2),
-                  backgroundColor: isEraser ? '#FFE5EC' : currentColor
+                  backgroundColor: isEraser ? theme.backgroundSecondary : currentColor
                 }]} />
               </View>
               <Text style={styles.brushSizeValue}>{brushSize}px</Text>
@@ -3532,7 +3164,563 @@ export function WhiteboardGame({ couple, userId, onClose, onComplete }) {
   );
 }
 
-const styles = StyleSheet.create({
+export function CheckersGame({ couple, userId, onClose, onTurnComplete, onComplete }) {
+  const [board, setBoard] = useState(initCheckersBoard());
+  const [currentTurn, setCurrentTurn] = useState('player1');
+  const [selectedPiece, setSelectedPiece] = useState(null);
+  const [myPlayer, setMyPlayer] = useState(null);
+  const [gameId, setGameId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [winner, setWinner] = useState(null);
+  const [partnerName, setPartnerName] = useState('Partner');
+
+  function initCheckersBoard() {
+    const board = Array(8).fill(null).map(() => Array(8).fill(null));
+    // Setup player1 pieces (top, red)
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 8; col++) {
+        if ((row + col) % 2 === 1) {
+          board[row][col] = { player: 'player1', isKing: false };
+        }
+      }
+    }
+    // Setup player2 pieces (bottom, black)
+    for (let row = 5; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        if ((row + col) % 2 === 1) {
+          board[row][col] = { player: 'player2', isKing: false };
+        }
+      }
+    }
+    return board;
+  }
+
+  useEffect(() => {
+    async function loadGame() {
+      const player = couple.auth_user1_id === userId ? 'player1' : 'player2';
+      setMyPlayer(player);
+
+      const partner = couple.auth_user1_id === userId ? couple.auth_user2_id : couple.auth_user1_id;
+      setPartnerName(partner ? 'Partner' : 'Partner');
+
+      const existingGame = await getActiveGame(couple.id, 'checkers');
+      if (existingGame) {
+        setGameId(existingGame.id);
+        setBoard(existingGame.game_state.board);
+        setCurrentTurn(existingGame.current_turn);
+        setTimeout(() => setWinner(existingGame.winner), 100);
+      } else {
+        const newGame = await createGame(couple.id, 'checkers', { board: initCheckersBoard() }, userId);
+        if (newGame) {
+          setGameId(newGame.id);
+        }
+      }
+      setLoading(false);
+    }
+    loadGame();
+  }, []);
+
+  // Subscribe to real-time game updates
+  useEffect(() => {
+    if (!gameId) return;
+
+    const subscription = supabase
+      .channel(`game_${gameId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'games',
+          filter: `id=eq.${gameId}`,
+        },
+        (payload) => {
+          console.log('🎮 Checkers game update received:', payload.new);
+          const updated = payload.new;
+          setBoard(updated.game_state.board);
+          setCurrentTurn(updated.current_turn);
+          setSelectedPiece(null); // Clear selected piece on any update
+          if (updated.winner) {
+            setWinner(updated.winner);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [gameId]);
+
+  function getValidMoves(row, col, piece, boardState = board, jumpsOnly = false) {
+    const moves = [];
+    const directions = piece.isKing ?
+      [[-1, -1], [-1, 1], [1, -1], [1, 1]] :
+      piece.player === 'player1' ? [[1, -1], [1, 1]] : [[-1, -1], [-1, 1]];
+
+    for (const [dr, dc] of directions) {
+      const newRow = row + dr;
+      const newCol = col + dc;
+
+      if (newRow >= 0 && newRow < 8 && newCol >= 0 && newCol < 8) {
+        if (!boardState[newRow][newCol] && !jumpsOnly) {
+          moves.push({ row: newRow, col: newCol, isJump: false });
+        } else if (boardState[newRow][newCol] && boardState[newRow][newCol].player !== piece.player) {
+          const jumpRow = newRow + dr;
+          const jumpCol = newCol + dc;
+          if (jumpRow >= 0 && jumpRow < 8 && jumpCol >= 0 && jumpCol < 8 && !boardState[jumpRow][jumpCol]) {
+            moves.push({ row: jumpRow, col: jumpCol, isJump: true, captureRow: newRow, captureCol: newCol });
+          }
+        }
+      }
+    }
+    return moves;
+  }
+
+  function hasAnyJumps(boardState, player) {
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const piece = boardState[row][col];
+        if (piece && piece.player === player) {
+          const moves = getValidMoves(row, col, piece, boardState, true);
+          if (moves.length > 0) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  async function handleSquarePress(row, col) {
+    if (currentTurn !== myPlayer || winner) return;
+
+    if (selectedPiece) {
+      const jumpsAvailable = hasAnyJumps(board, myPlayer);
+      const validMoves = getValidMoves(selectedPiece.row, selectedPiece.col, selectedPiece.piece, board, jumpsAvailable);
+      const move = validMoves.find(m => m.row === row && m.col === col);
+
+      if (move) {
+        const newBoard = board.map(r => r.slice());
+        newBoard[row][col] = { ...selectedPiece.piece };
+        newBoard[selectedPiece.row][selectedPiece.col] = null;
+
+        if (move.isJump) {
+          newBoard[move.captureRow][move.captureCol] = null;
+        }
+
+        if ((row === 0 && selectedPiece.piece.player === 'player2') ||
+          (row === 7 && selectedPiece.piece.player === 'player1')) {
+          newBoard[row][col].isKing = true;
+        }
+
+        setBoard(newBoard);
+
+        // Check if more jumps are available from the new position
+        if (move.isJump) {
+          const moreJumps = getValidMoves(row, col, newBoard[row][col], newBoard, true);
+          if (moreJumps.length > 0) {
+            // Keep the piece selected for another jump
+            setSelectedPiece({ row, col, piece: newBoard[row][col] });
+            return; // Don't end turn yet
+          }
+        }
+
+        setSelectedPiece(null);
+
+        const gameWinner = checkWinner(newBoard);
+        const nextTurn = currentTurn === 'player1' ? 'player2' : 'player1';
+
+        // Update turn locally immediately
+        setCurrentTurn(nextTurn);
+        if (gameWinner) {
+          setWinner(gameWinner);
+        }
+
+        await updateGameState(
+          gameId,
+          { board: newBoard },
+          nextTurn,
+          gameWinner,
+          userId
+        );
+
+        if (onTurnComplete) {
+          await onTurnComplete();
+        }
+      } else {
+        setSelectedPiece(null);
+      }
+    } else if (board[row][col] && board[row][col].player === myPlayer) {
+      setSelectedPiece({ row, col, piece: board[row][col] });
+    }
+  }
+
+  function checkWinner(board) {
+    let player1Pieces = 0;
+    let player2Pieces = 0;
+
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        if (board[row][col]) {
+          if (board[row][col].player === 'player1') player1Pieces++;
+          else player2Pieces++;
+        }
+      }
+    }
+
+    if (player1Pieces === 0) return 'player2';
+    if (player2Pieces === 0) return 'player1';
+    return null;
+  }
+
+  async function restartGame() {
+    if (gameId) {
+      await endGame(gameId);
+    }
+
+    // Reset local state
+    setGameId(null);
+    setBoard(initCheckersBoard());
+    setSelectedPiece(null);
+    setCurrentTurn('player1');
+    setWinner(null);
+    setLoading(true);
+
+    // Create a new game
+    const newGame = await createGame(couple.id, 'checkers', { board: initCheckersBoard() }, userId);
+    if (newGame) {
+      setGameId(newGame.id);
+    }
+    setLoading(false);
+  }
+
+  if (loading) {
+    return (
+      <View style={styles.modalContainer}>
+        <View style={styles.gameModalContent}>
+          <Text style={styles.gameModalTitle}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const isMyTurn = currentTurn === myPlayer;
+
+  return (
+    <View style={styles.modalContainer}>
+      <View style={styles.gameModalContent}>
+        <Text style={styles.gameModalTitle}>Checkers</Text>
+
+        <Text style={styles.playerInfoText}>
+          You are: {myPlayer === 'player1' ? 'Red ⭕' : 'Black ⚫'} | Partner: {partnerName}
+        </Text>
+
+        <Text style={[styles.turnText, isMyTurn && styles.myTurnText]}>
+          {winner
+            ? `${winner === myPlayer ? 'You Win!' : partnerName + ' Wins!'}`
+            : isMyTurn
+              ? "Your Turn!"
+              : `${partnerName}'s Turn`}
+        </Text>
+
+        <View style={styles.checkersBoard}>
+          {board.map((row, rowIndex) => (
+            <View key={rowIndex} style={styles.checkersRow}>
+              {row.map((cell, colIndex) => {
+                const isLight = (rowIndex + colIndex) % 2 === 0;
+                const isSelected = selectedPiece?.row === rowIndex && selectedPiece?.col === colIndex;
+                const validMove = selectedPiece ?
+                  getValidMoves(selectedPiece.row, selectedPiece.col, selectedPiece.piece)
+                    .find(m => m.row === rowIndex && m.col === colIndex) : null;
+
+                return (
+                  <TouchableOpacity
+                    key={colIndex}
+                    style={[
+                      styles.checkersSquare,
+                      { backgroundColor: isLight ? '#F5DEB3' : '#8B4513' },
+                      isSelected && { backgroundColor: '#90EE90' },
+                      validMove && { backgroundColor: '#FFD700' }
+                    ]}
+                    onPress={() => handleSquarePress(rowIndex, colIndex)}
+                    activeOpacity={!isMyTurn || winner ? 1 : 0.7}
+                  >
+                    {cell && (
+                      <View style={[
+                        styles.checkersPiece,
+                        { backgroundColor: cell.player === 'player1' ? '#DC143C' : '#000000' }
+                      ]}>
+                        {cell.isKing && <Text style={styles.checkersKing}>👑</Text>}
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.gameButtons}>
+          {winner && (
+            <TouchableOpacity
+              style={[styles.gameButton, styles.completeButton]}
+              onPress={() => onComplete(winner === myPlayer)}
+            >
+              <Text style={styles.gameButtonText}>Complete</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={[styles.gameButton, { backgroundColor: '#FF9500' }]}
+            onPress={restartGame}
+          >
+            <Text style={styles.gameButtonText}>Restart Game</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.gameButton, styles.closeButton]}
+            onPress={onClose}
+          >
+            <Text style={styles.gameButtonText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+export function MemoryMatchGame({ couple, userId, onClose, onTurnComplete, onComplete }) {
+  const [cards, setCards] = useState([]);
+  const [flippedIndices, setFlippedIndices] = useState([]);
+  const [matchedPairs, setMatchedPairs] = useState([]);
+  const [scores, setScores] = useState({ player1: 0, player2: 0 });
+  const [currentTurn, setCurrentTurn] = useState('player1');
+  const [myPlayer, setMyPlayer] = useState(null);
+  const [gameId, setGameId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [winner, setWinner] = useState(null);
+  const [partnerName, setPartnerName] = useState('Partner');
+
+  const emojis = ['🎮', '🎯', '🎨', '🎭', '🎪', '🎬', '🎵', '🎸'];
+
+  function initMemoryCards() {
+    const pairs = emojis.flatMap(emoji => [emoji, emoji]);
+    return pairs.sort(() => Math.random() - 0.5);
+  }
+
+  useEffect(() => {
+    async function loadGame() {
+      const player = couple.auth_user1_id === userId ? 'player1' : 'player2';
+      setMyPlayer(player);
+
+      const partner = couple.auth_user1_id === userId ? couple.auth_user2_id : couple.auth_user1_id;
+      setPartnerName(partner ? 'Partner' : 'Partner');
+
+      const existingGame = await getActiveGame(couple.id, 'memorymatch');
+      if (existingGame) {
+        setGameId(existingGame.id);
+        setCards(existingGame.game_state.cards);
+        setMatchedPairs(existingGame.game_state.matchedPairs || []);
+        setScores(existingGame.game_state.scores || { player1: 0, player2: 0 });
+        setCurrentTurn(existingGame.current_turn);
+        setTimeout(() => setWinner(existingGame.winner), 100);
+      } else {
+        const initialCards = initMemoryCards();
+        const newGame = await createGame(couple.id, 'memorymatch', {
+          cards: initialCards,
+          matchedPairs: [],
+          scores: { player1: 0, player2: 0 }
+        }, userId);
+
+        if (newGame) {
+          setGameId(newGame.id);
+          setCards(initialCards);
+        }
+      }
+      setLoading(false);
+    }
+    loadGame();
+  }, []);
+
+  // Subscribe to real-time game updates
+  useEffect(() => {
+    if (!gameId) return;
+
+    const subscription = supabase
+      .channel(`game_${gameId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'games',
+          filter: `id=eq.${gameId}`,
+        },
+        (payload) => {
+          console.log('🎮 Memory Match game update received:', payload.new);
+          const updated = payload.new;
+          setCards(updated.game_state.cards);
+          setMatchedPairs(updated.game_state.matchedPairs || []);
+          setScores(updated.game_state.scores || { player1: 0, player2: 0 });
+          setCurrentTurn(updated.current_turn);
+          setFlippedIndices([]); // Clear flipped cards on any update
+          if (updated.winner) {
+            setWinner(updated.winner);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [gameId]);
+
+  async function handleCardPress(index) {
+    if (currentTurn !== myPlayer || winner) return;
+    if (flippedIndices.includes(index) || matchedPairs.includes(index)) return;
+    if (flippedIndices.length >= 2) return;
+
+    const newFlipped = [...flippedIndices, index];
+    setFlippedIndices(newFlipped);
+
+    if (newFlipped.length === 2) {
+      const [first, second] = newFlipped;
+      const isMatch = cards[first] === cards[second];
+
+      setTimeout(async () => {
+        if (isMatch) {
+          const newMatchedPairs = [...matchedPairs, first, second];
+          const newScores = { ...scores };
+          newScores[currentTurn]++;
+
+          setMatchedPairs(newMatchedPairs);
+          setScores(newScores);
+          setFlippedIndices([]);
+
+          const gameWinner = newMatchedPairs.length === cards.length ?
+            (newScores.player1 > newScores.player2 ? 'player1' :
+              newScores.player2 > newScores.player1 ? 'player2' : 'draw') : null;
+
+          // Traditional rules: keep the same turn when you find a match
+          const nextTurn = currentTurn;
+
+          await updateGameState(
+            gameId,
+            {
+              cards,
+              matchedPairs: newMatchedPairs,
+              scores: newScores
+            },
+            nextTurn,
+            gameWinner,
+            userId
+          );
+
+          if (gameWinner) {
+            setWinner(gameWinner);
+          }
+
+          if (onTurnComplete) {
+            await onTurnComplete();
+          }
+        } else {
+          setFlippedIndices([]);
+          // Only switch turns when no match is found
+          const nextTurn = currentTurn === 'player1' ? 'player2' : 'player1';
+          setCurrentTurn(nextTurn);
+
+          await updateGameState(
+            gameId,
+            { cards, matchedPairs, scores },
+            nextTurn,
+            null,
+            userId
+          );
+
+          if (onTurnComplete) {
+            await onTurnComplete();
+          }
+        }
+      }, 1000);
+    }
+  }
+
+  if (loading) {
+    return (
+      <View style={styles.modalContainer}>
+        <View style={styles.gameModalContent}>
+          <Text style={styles.gameModalTitle}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const isMyTurn = currentTurn === myPlayer;
+
+  return (
+    <View style={styles.modalContainer}>
+      <View style={styles.gameModalContent}>
+        <Text style={styles.gameModalTitle}>Memory Match</Text>
+
+        <Text style={styles.playerInfoText}>
+          You: {scores[myPlayer]} | {partnerName}: {scores[myPlayer === 'player1' ? 'player2' : 'player1']}
+        </Text>
+
+        <Text style={[styles.turnText, isMyTurn && styles.myTurnText]}>
+          {winner
+            ? winner === 'draw'
+              ? "It's a Draw!"
+              : winner === myPlayer
+                ? 'You Win!'
+                : `${partnerName} Wins!`
+            : isMyTurn
+              ? "Your Turn!"
+              : `${partnerName}'s Turn`}
+        </Text>
+
+        <View style={styles.memoryGrid}>
+          {cards.map((card, index) => {
+            const isFlipped = flippedIndices.includes(index) || matchedPairs.includes(index);
+
+            return (
+              <TouchableOpacity
+                key={index}
+                style={[
+                  styles.memoryCard,
+                  isFlipped && styles.memoryCardFlipped
+                ]}
+                onPress={() => handleCardPress(index)}
+                activeOpacity={!isMyTurn || winner ? 1 : 0.7}
+                disabled={isFlipped || !isMyTurn || winner}
+              >
+                <Text style={styles.memoryCardText}>
+                  {isFlipped ? card : '?'}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        <View style={styles.gameButtons}>
+          {winner && (
+            <TouchableOpacity
+              style={[styles.gameButton, styles.completeButton]}
+              onPress={() => onComplete(winner === 'draw' ? true : winner === myPlayer)}
+            >
+              <Text style={styles.gameButtonText}>Complete</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity style={[styles.gameButton, styles.closeButton]} onPress={onClose}>
+            <Text style={styles.gameButtonText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const getStyles = (theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -3542,13 +3730,13 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 10,
   },
   subtitle: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginBottom: 30,
   },
@@ -3557,28 +3745,28 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
   },
   backButton: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     paddingVertical: 10,
     paddingHorizontal: 15,
     borderRadius: 10,
     alignSelf: 'flex-start',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   backButtonText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
     fontSize: 14,
   },
   categoryCard: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     marginBottom: 20,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
-    shadowColor: '#FF1493',
+    borderColor: theme.backgroundSecondary,
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 5,
@@ -3591,23 +3779,23 @@ const styles = StyleSheet.create({
   categoryName: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   categoryDescription: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
   },
   gameCard: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     marginBottom: 20,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
-    shadowColor: '#FF1493',
+    borderColor: theme.backgroundSecondary,
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 5,
@@ -3620,17 +3808,17 @@ const styles = StyleSheet.create({
   gameName: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   gameReward: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   gameCardPending: {
-    borderColor: '#FF1493',
+    borderColor: theme.primary,
     borderWidth: 3,
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOpacity: 0.6,
     shadowRadius: 10,
     elevation: 8,
@@ -3642,7 +3830,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 10,
     right: 10,
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
@@ -3663,12 +3851,12 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   emptySubtext: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
   },
   modalContainer: {
@@ -3678,7 +3866,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   gameModalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     width: '90%',
@@ -3688,23 +3876,23 @@ const styles = StyleSheet.create({
   gameModalTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 20,
   },
   playerInfoText: {
     fontSize: 14,
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 10,
     textAlign: 'center',
   },
   turnText: {
     fontSize: 18,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 20,
     fontWeight: 'bold',
   },
   myTurnText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontSize: 20,
   },
   board: {
@@ -3720,13 +3908,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
-    backgroundColor: '#FFF0F5',
+    borderColor: theme.backgroundSecondary,
+    backgroundColor: theme.background,
   },
   cellText: {
     fontSize: 48,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   gameButtons: {
     flexDirection: 'row',
@@ -3734,7 +3922,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   gameButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     paddingHorizontal: 20,
     borderRadius: 15,
@@ -3744,7 +3932,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#32CD32',
   },
   closeButton: {
-    backgroundColor: '#FFB6D9',
+    backgroundColor: theme.border,
   },
   gameButtonText: {
     color: 'white',
@@ -3753,13 +3941,13 @@ const styles = StyleSheet.create({
   },
   triviaProgress: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 20,
   },
   triviaQuestion: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 30,
   },
@@ -3767,17 +3955,17 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   triviaOption: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 20,
     borderRadius: 15,
     marginBottom: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     alignItems: 'center',
   },
   triviaOptionText: {
     fontSize: 18,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   triviaResult: {
@@ -3786,18 +3974,18 @@ const styles = StyleSheet.create({
   },
   triviaResultText: {
     fontSize: 18,
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 10,
     fontWeight: 'bold',
   },
   triviaInfo: {
     fontSize: 14,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginBottom: 20,
   },
   nextButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 15,
     paddingHorizontal: 30,
     borderRadius: 15,
@@ -3816,21 +4004,21 @@ const styles = StyleSheet.create({
   dotsPlayer: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FFB6D9',
+    color: theme.border,
   },
   dotsPlayerActive: {
-    color: '#FF1493',
+    color: theme.primary,
     fontSize: 20,
   },
   dotsWinner: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 15,
     textAlign: 'center',
   },
   dotsGrid: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 10,
     borderRadius: 10,
     marginBottom: 20,
@@ -3848,7 +4036,7 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
   },
   horizontalLineContainer: {
     width: 70,
@@ -3859,10 +4047,10 @@ const styles = StyleSheet.create({
   horizontalLine: {
     width: 70,
     height: 5,
-    backgroundColor: '#FFE5EC',
+    backgroundColor: theme.backgroundSecondary,
   },
   lineActive: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
   },
   verticalRow: {
     flexDirection: 'row',
@@ -3883,7 +4071,7 @@ const styles = StyleSheet.create({
   verticalLine: {
     width: 5,
     height: 70,
-    backgroundColor: '#FFE5EC',
+    backgroundColor: theme.backgroundSecondary,
   },
   boxSpace: {
     width: 70,
@@ -3896,7 +4084,7 @@ const styles = StyleSheet.create({
   },
   whiteboardContainer: {
     flex: 1,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     width: '100%',
     height: '100%',
   },
@@ -3907,13 +4095,13 @@ const styles = StyleSheet.create({
     paddingTop: 50,
     paddingHorizontal: 20,
     paddingBottom: 20,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderBottomWidth: 2,
-    borderBottomColor: '#FFE5EC',
+    borderBottomColor: theme.backgroundSecondary,
   },
   whiteboardBackButton: {
     fontSize: 28,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   whiteboardTabs: {
@@ -3922,98 +4110,98 @@ const styles = StyleSheet.create({
   },
   whiteboardTab: {
     fontSize: 18,
-    color: '#FFB6D9',
+    color: theme.border,
     fontWeight: 'bold',
     paddingBottom: 5,
   },
   whiteboardTabActive: {
-    color: '#FF1493',
+    color: theme.primary,
     borderBottomWidth: 3,
-    borderBottomColor: '#FF1493',
+    borderBottomColor: theme.primary,
   },
   whiteboardControls: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 15,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
   },
   whiteboardControlLeft: {
     flexDirection: 'row',
     gap: 10,
   },
   whiteboardControlButton: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     paddingVertical: 10,
     paddingHorizontal: 18,
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
   },
   whiteboardControlText: {
     fontSize: 14,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   whiteboardSaveButton: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     paddingVertical: 10,
     paddingHorizontal: 25,
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: '#FF1493',
+    borderColor: theme.primary,
   },
   whiteboardSaveText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
     fontSize: 16,
   },
   whiteboardCanvas: {
     width: '100%',
     aspectRatio: 1, // Square canvas - consistent size
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     margin: 15,
     borderRadius: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     overflow: 'hidden',
   },
   whiteboardToolBar: {
     flexDirection: 'row',
     justifyContent: 'center',
     padding: 12,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderTopWidth: 1,
-    borderTopColor: '#FFE5EC',
+    borderTopColor: theme.backgroundSecondary,
     gap: 10,
   },
   whiteboardToolButton: {
     paddingVertical: 10,
     paddingHorizontal: 25,
     borderRadius: 20,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   whiteboardToolButtonActive: {
-    backgroundColor: '#FF1493',
-    borderColor: '#FF1493',
+    backgroundColor: theme.primary,
+    borderColor: theme.primary,
   },
   whiteboardToolText: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   whiteboardColorPicker: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     paddingTop: 12,
     paddingBottom: 12,
     borderTopWidth: 1,
-    borderTopColor: '#FFE5EC',
+    borderTopColor: theme.backgroundSecondary,
   },
   whiteboardColorPickerLabel: {
     fontSize: 13,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
     paddingHorizontal: 15,
     marginBottom: 8,
@@ -4037,15 +4225,15 @@ const styles = StyleSheet.create({
     borderColor: '#000',
   },
   whiteboardBackgroundPicker: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     paddingTop: 12,
     paddingBottom: 15,
     borderTopWidth: 1,
-    borderTopColor: '#FFE5EC',
+    borderTopColor: theme.backgroundSecondary,
   },
   whiteboardBackgroundLabel: {
     fontSize: 13,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
     paddingHorizontal: 15,
     marginBottom: 8,
@@ -4066,7 +4254,7 @@ const styles = StyleSheet.create({
   },
   whiteboardBackgroundButtonActive: {
     borderWidth: 3,
-    borderColor: '#FF1493',
+    borderColor: theme.primary,
   },
   whiteboardGallery: {
     flex: 1,
@@ -4075,17 +4263,17 @@ const styles = StyleSheet.create({
     padding: 15,
   },
   whiteboardGalleryItem: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     padding: 15,
     marginBottom: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   whiteboardGalleryCanvas: {
     width: '100%',
     aspectRatio: 1,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 10,
     marginBottom: 10,
     overflow: 'hidden',
@@ -4097,10 +4285,10 @@ const styles = StyleSheet.create({
   },
   whiteboardGalleryDate: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   whiteboardDeleteButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 6,
     paddingHorizontal: 15,
     borderRadius: 12,
@@ -4111,16 +4299,16 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   whiteboardWidgetButton: {
-    backgroundColor: '#FFB6D9',
+    backgroundColor: theme.border,
     paddingVertical: 6,
     paddingHorizontal: 15,
     borderRadius: 12,
   },
   whiteboardWidgetButtonActive: {
-    backgroundColor: '#FF69B4',
+    backgroundColor: theme.secondary,
   },
   whiteboardWidgetText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontSize: 12,
     fontWeight: 'bold',
   },
@@ -4132,12 +4320,12 @@ const styles = StyleSheet.create({
   customSliderTrack: {
     position: 'relative',
     height: 6,
-    backgroundColor: '#FFE5EC',
+    backgroundColor: theme.backgroundSecondary,
     borderRadius: 3,
   },
   customSliderFill: {
     height: '100%',
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     borderRadius: 3,
   },
   customSliderThumb: {
@@ -4146,7 +4334,7 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
@@ -4160,19 +4348,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   customAlertContainer: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 25,
     width: '80%',
     maxWidth: 400,
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FF1493',
+    borderColor: theme.primary,
   },
   customAlertTitle: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 12,
     textAlign: 'center',
   },
@@ -4184,11 +4372,11 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   customAlertButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     paddingHorizontal: 40,
     borderRadius: 25,
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
@@ -4214,7 +4402,7 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
   },
   colorPickerOverlay: {
     flex: 1,
@@ -4222,7 +4410,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   colorPickerContainer: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderTopLeftRadius: 25,
     borderTopRightRadius: 25,
     paddingTop: 20,
@@ -4231,7 +4419,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 3,
     borderLeftWidth: 3,
     borderRightWidth: 3,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   colorPickerHeader: {
     flexDirection: 'row',
@@ -4242,11 +4430,11 @@ const styles = StyleSheet.create({
   colorPickerTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   colorPickerClose: {
     fontSize: 28,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   colorPickerSection: {
@@ -4255,7 +4443,7 @@ const styles = StyleSheet.create({
   colorPickerSectionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 12,
   },
   colorPickerGrid: {
@@ -4278,12 +4466,12 @@ const styles = StyleSheet.create({
     borderColor: '#000',
   },
   colorPickerDoneButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 15,
     borderRadius: 25,
     alignItems: 'center',
     marginTop: 10,
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
@@ -4300,9 +4488,9 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
@@ -4312,7 +4500,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   brushSizePreview: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
   },
   brushSizePickerSection: {
     paddingVertical: 20,
@@ -4322,9 +4510,9 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 15,
@@ -4332,7 +4520,7 @@ const styles = StyleSheet.create({
   brushSizeValue: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 20,
   },
   brushSizeSlider: {
@@ -4352,7 +4540,7 @@ const styles = StyleSheet.create({
     width: 45,
     height: 45,
     margin: 3,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 22.5,
     justifyContent: 'center',
     alignItems: 'center',
@@ -4376,7 +4564,7 @@ const styles = StyleSheet.create({
   reversiContent: {
     width: '100%',
     maxWidth: 400,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 20,
     alignItems: 'center',
@@ -4390,11 +4578,11 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   reversiPlayerScore: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 15,
     borderRadius: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     alignItems: 'center',
     flex: 1,
     marginHorizontal: 5,
@@ -4402,13 +4590,13 @@ const styles = StyleSheet.create({
   reversiScoreLabel: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   reversiScoreValue: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   reversiBoard: {
     backgroundColor: '#228B22',
@@ -4460,88 +4648,88 @@ const styles = StyleSheet.create({
     top: 50,
     right: 20,
     zIndex: 10,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     width: 44,
     height: 44,
     borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FF1493',
+    borderColor: theme.primary,
   },
   drawingViewerCloseText: {
     fontSize: 24,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   drawingViewerCanvas: {
     width: '90%',
     aspectRatio: 1,
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     borderWidth: 3,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     overflow: 'hidden',
   },
   wouldYouRatherPrompt: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 20,
   },
   wouldYouRatherOption: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 20,
     borderRadius: 15,
     marginBottom: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   wouldYouRatherLabel: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 8,
   },
   wouldYouRatherOr: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginVertical: 10,
   },
   whosMoreLikelyQuestion: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 30,
     lineHeight: 28,
   },
   whosMoreLikelyOption: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     padding: 20,
     borderRadius: 15,
     marginBottom: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
     alignItems: 'center',
   },
   whosMoreLikelyText: {
     fontSize: 18,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   currentPlayerText: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginBottom: 15,
     paddingVertical: 8,
     paddingHorizontal: 16,
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 20,
     alignSelf: 'center',
   },
@@ -4560,34 +4748,34 @@ const styles = StyleSheet.create({
   resultsTitleNew: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 20,
     textAlign: 'center',
   },
   resultsStatsBox: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 20,
     alignItems: 'center',
     width: '100%',
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 5,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   resultsStatsNumber: {
     fontSize: 48,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   resultsStatsLabel: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 5,
   },
   resultsStatsDetail: {
@@ -4602,7 +4790,7 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
   resultCardNew: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 20,
     marginBottom: 15,
@@ -4621,8 +4809,8 @@ const styles = StyleSheet.create({
   resultCardNumber: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF1493',
-    backgroundColor: '#FFF0F5',
+    color: theme.primary,
+    backgroundColor: theme.background,
     paddingVertical: 4,
     paddingHorizontal: 12,
     borderRadius: 12,
@@ -4647,11 +4835,11 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   resultAnswerBox: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 12,
     padding: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   resultAnswerBoxMatch: {
     borderColor: '#32CD32',
@@ -4666,7 +4854,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 8,
@@ -4675,7 +4863,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#FF69B4',
+    backgroundColor: theme.secondary,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 8,
@@ -4688,7 +4876,7 @@ const styles = StyleSheet.create({
   resultAnswerChoice: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   resultAnswerTextNew: {
     fontSize: 15,
@@ -4700,11 +4888,11 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   resultsCompleteBtn: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 16,
     borderRadius: 15,
     alignItems: 'center',
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 6,
@@ -4716,16 +4904,69 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   resultsCloseBtn: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     paddingVertical: 14,
     borderRadius: 15,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   resultsCloseBtnText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  // Checkers styles
+  checkersBoard: {
+    width: 320,
+    height: 320,
+    marginVertical: 15,
+  },
+  checkersRow: {
+    flexDirection: 'row',
+  },
+  checkersSquare: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkersPiece: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'white',
+  },
+  checkersKing: {
+    fontSize: 16,
+  },
+  // Memory Match styles
+  memoryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    marginVertical: 15,
+    gap: 8,
+  },
+  memoryCard: {
+    width: 70,
+    height: 70,
+    backgroundColor: theme.primary,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: theme.backgroundSecondary,
+  },
+  memoryCardFlipped: {
+    backgroundColor: theme.card,
+  },
+  memoryCardText: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: 'white',
   },
 });

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -16,8 +16,12 @@ import { useIsFocused } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import * as Animatable from 'react-native-animatable';
+import { useTheme } from '../../lib/themeContext';
+import * as FileSystem from 'expo-file-system/legacy';
 
 export default function AlbumScreen() {
+  const { theme } = useTheme();
+  const styles = useMemo(() => getStyles(theme), [theme]);
   const { user } = useAuth();
   const isFocused = useIsFocused();
   const [memories, setMemories] = useState([]);
@@ -30,12 +34,16 @@ export default function AlbumScreen() {
   const [viewingImage, setViewingImage] = useState(null);
   const [showImageModal, setShowImageModal] = useState(false);
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   useEffect(() => {
-    if (isFocused && user) {
+    // Only load data on initial mount, not every focus
+    // Realtime subscription handles updates
+    if (user && !initialLoadDone) {
       loadData();
+      setInitialLoadDone(true);
     }
-  }, [isFocused, user]);
+  }, [user, initialLoadDone]);
 
   useEffect(() => {
     if (couple) {
@@ -81,7 +89,24 @@ export default function AlbumScreen() {
       .order('created_at', { ascending: false });
 
     if (!error && data) {
-      setMemories(data);
+      // Get signed URLs for each memory image
+      const memoriesWithUrls = await Promise.all(
+        data.map(async (memory) => {
+          if (memory.storage_path) {
+            // Get a signed URL valid for 1 hour
+            const { data: signedData, error: signedError } = await supabase.storage
+              .from('memories')
+              .createSignedUrl(memory.storage_path, 3600); // 1 hour expiry
+
+            if (!signedError && signedData) {
+              return { ...memory, signed_url: signedData.signedUrl };
+            }
+          }
+          // Fallback to image_url if no storage_path (old data)
+          return { ...memory, signed_url: memory.image_url };
+        })
+      );
+      setMemories(memoriesWithUrls);
     }
   }
 
@@ -160,36 +185,63 @@ export default function AlbumScreen() {
     setUploading(true);
 
     try {
-      // Upload image to Supabase Storage
-      const fileExt = selectedImage.split('.').pop();
-      const fileName = `${couple.id}/${Date.now()}.${fileExt}`;
-
-      const formData = new FormData();
-      formData.append('file', {
-        uri: selectedImage,
-        name: fileName,
-        type: `image/${fileExt}`,
+      // Read image as base64
+      const base64 = await FileSystem.readAsStringAsync(selectedImage, {
+        encoding: 'base64',
       });
 
-      // For demo purposes, we'll store just the URI directly
-      // In production, you'd upload to Supabase Storage and get a URL
-      const { error } = await supabase.from('memories').insert({
+      // Convert base64 to binary
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      // Generate unique filename
+      const fileExt = selectedImage.split('.').pop() || 'jpg';
+      const fileName = `${couple.id}/${Date.now()}.${fileExt}`;
+
+      // Upload to Supabase Storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('memories')
+        .upload(fileName, bytes.buffer, {
+          contentType: `image/${fileExt === 'jpg' ? 'jpeg' : fileExt}`,
+          upsert: false,
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        throw new Error('Failed to upload image: ' + uploadError.message);
+      }
+
+      // Get signed URL for immediate display
+      const { data: signedData } = await supabase.storage
+        .from('memories')
+        .createSignedUrl(fileName, 3600);
+
+      // Save to database with storage path
+      const { error: dbError } = await supabase.from('memories').insert({
         couple_id: couple.id,
         auth_user_id: user.id,
         description: newMemoryDescription.trim(),
-        image_url: selectedImage, // In production, use the uploaded URL
+        storage_path: fileName,
+        image_url: signedData?.signedUrl || '', // Store signed URL as fallback
       });
 
-      if (error) throw error;
+      if (dbError) throw dbError;
 
       // Add happiness to pet
       await addHappiness(5);
+
+      // Reload memories to get fresh signed URLs
+      await loadMemories(couple.id);
 
       setNewMemoryDescription('');
       setSelectedImage(null);
       setShowAddModal(false);
       showAlert('Success!', 'Memory added! Your pet gained 5 happiness! 💕');
     } catch (error) {
+      console.error('Error adding memory:', error);
       showAlert('Error', error.message);
     } finally {
       setUploading(false);
@@ -206,13 +258,18 @@ export default function AlbumScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            console.log('Deleting memory:', memoryId);
             const { error } = await supabase
               .from('memories')
               .delete()
               .eq('id', memoryId);
 
             if (error) {
+              console.error('Delete error:', error);
               showAlert('Error', error.message);
+            } else {
+              console.log('Memory deleted successfully');
+              setMemories(prev => prev.filter(m => m.id !== memoryId));
             }
           },
         },
@@ -248,7 +305,7 @@ export default function AlbumScreen() {
   }
 
   return (
-    <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+    <LinearGradient colors={theme.gradient} style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Photo Album</Text>
         <TouchableOpacity
@@ -279,13 +336,13 @@ export default function AlbumScreen() {
               >
                 <TouchableOpacity
                   onPress={() => {
-                    setViewingImage(memory.image_url);
+                    setViewingImage(memory.signed_url || memory.image_url);
                     setShowImageModal(true);
                   }}
                   activeOpacity={0.9}
                 >
                   <Image
-                    source={{ uri: memory.image_url }}
+                    source={{ uri: memory.signed_url || memory.image_url }}
                     style={styles.memoryImage}
                     resizeMode="cover"
                   />
@@ -339,7 +396,7 @@ export default function AlbumScreen() {
             <TextInput
               style={styles.input}
               placeholder="Describe this memory..."
-              placeholderTextColor="#FFB6D9"
+              placeholderTextColor={theme.border}
               value={newMemoryDescription}
               onChangeText={setNewMemoryDescription}
               multiline
@@ -415,7 +472,7 @@ export default function AlbumScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -426,7 +483,7 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 18,
-    color: '#FF1493',
+    color: theme.primary,
   },
   header: {
     flexDirection: 'row',
@@ -438,10 +495,10 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
   },
   addButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 15,
@@ -469,12 +526,12 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   emptySubtext: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     paddingHorizontal: 40,
   },
@@ -485,13 +542,13 @@ const styles = StyleSheet.create({
   },
   memoryCard: {
     width: '48%',
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     marginBottom: 15,
     overflow: 'hidden',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
-    shadowColor: '#FF1493',
+    borderColor: theme.backgroundSecondary,
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
@@ -506,7 +563,7 @@ const styles = StyleSheet.create({
   },
   memoryDescription: {
     fontSize: 14,
-    color: '#333',
+    color: theme.text,
     marginBottom: 8,
   },
   memoryFooter: {
@@ -516,11 +573,11 @@ const styles = StyleSheet.create({
   },
   memoryDate: {
     fontSize: 10,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   deleteText: {
     fontSize: 10,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   modalContainer: {
@@ -530,7 +587,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   modalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     width: '90%',
@@ -539,17 +596,17 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 20,
     textAlign: 'center',
   },
   imagePicker: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 15,
     padding: 40,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
     borderStyle: 'dashed',
     marginBottom: 20,
   },
@@ -558,7 +615,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   imagePickerText: {
-    color: '#FF69B4',
+    color: theme.secondary,
     fontSize: 16,
   },
   previewImage: {
@@ -572,17 +629,17 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   changeImageText: {
-    color: '#FF1493',
+    color: theme.primary,
     fontSize: 14,
     fontWeight: 'bold',
   },
   input: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 15,
     padding: 15,
     fontSize: 16,
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
     marginBottom: 20,
     minHeight: 80,
     textAlignVertical: 'top',
@@ -599,10 +656,10 @@ const styles = StyleSheet.create({
     marginHorizontal: 5,
   },
   cancelButton: {
-    backgroundColor: '#FFB6D9',
+    backgroundColor: theme.border,
   },
   saveButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
   },
   buttonText: {
     color: 'white',
@@ -649,19 +706,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   customAlertContainer: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 25,
     width: '80%',
     maxWidth: 400,
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FF1493',
+    borderColor: theme.primary,
   },
   customAlertTitle: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 12,
     textAlign: 'center',
   },
@@ -673,11 +730,11 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   customAlertButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     paddingHorizontal: 40,
     borderRadius: 25,
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,

@@ -50,7 +50,25 @@
       "Bash(node -c:*)",
       "Bash(rm:*)",
       "Bash(git rm:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(supabase --version:*)",
+      "Bash(supabase projects:*)",
+      "Bash(supabase link:*)",
+      "Bash(supabase status:*)",
+      "Bash(supabase functions deploy:*)",
+      "Bash(supabase login:*)",
+      "Bash(node scripts/generate-questions.js:*)",
+      "Bash(.generate.bat all 50)",
+      "WebFetch(domain:supabase.com)",
+      "Bash(start https://supabase.com/dashboard/project/avnokifuqpazxcwynjmk/functions/new)",
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(node check-questions.js:*)",
+      "Bash(node -e:*)",
+      "Bash(node fix-modals.js:*)",
+      "Bash(git checkout:*)",
+      "Bash(node fix-modals-proper.js:*)",
+      "Bash(grep:*)",
+      "Bash(adb logcat:*)"
     ]
   }
 }

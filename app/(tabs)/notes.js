@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,14 +12,19 @@ import {
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useAuth } from '../../lib/authContext';
 import { useIsFocused } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getCoupleData, getPetData, savePetData, getStreakData, saveStreakData } from '../../lib/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Animatable from 'react-native-animatable';
+import { useTheme } from '../../lib/themeContext';
 
 export default function NotesScreen() {
+  const { theme } = useTheme();
+  const styles = useMemo(() => getStyles(theme), [theme]);
   const { user } = useAuth();
   const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
   const [notes, setNotes] = useState([]);
   const [couple, setCouple] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -27,6 +32,7 @@ export default function NotesScreen() {
   const [loading, setLoading] = useState(true);
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
   const [editingNote, setEditingNote] = useState(null);
+  const [viewingNote, setViewingNote] = useState(null);
 
   useEffect(() => {
     if (isFocused && user) {
@@ -218,6 +224,7 @@ export default function NotesScreen() {
     const streakData = await getStreakData();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD format
 
     let lastDate = null;
     if (streakData.lastActivityDate) {
@@ -237,6 +244,15 @@ export default function NotesScreen() {
         streakData.currentStreak = 1;
       }
       streakData.lastActivityDate = new Date().toISOString();
+
+      // Track all activity dates for calendar display
+      if (!streakData.activityDates) {
+        streakData.activityDates = [];
+      }
+      if (!streakData.activityDates.includes(todayStr)) {
+        streakData.activityDates.push(todayStr);
+      }
+
       await saveStreakData(streakData);
     }
   }
@@ -299,7 +315,7 @@ export default function NotesScreen() {
   }
 
   return (
-    <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+    <LinearGradient colors={theme.gradient} style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.addButton}
@@ -324,71 +340,124 @@ export default function NotesScreen() {
               key={note.id}
               animation="fadeInUp"
               delay={index * 100}
-              style={styles.noteCard}
             >
-              <Text style={styles.noteContent}>{note.content}</Text>
-              <View style={styles.noteFooter}>
-                <Text style={styles.noteDate}>
-                  {new Date(note.created_at).toLocaleDateString()} at{' '}
-                  {new Date(note.created_at).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
+              <TouchableOpacity
+                style={styles.noteCard}
+                onPress={() => setViewingNote(note)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.noteContent} numberOfLines={3}>
+                  {note.content}
                 </Text>
-                <View style={styles.noteActions}>
-                  <TouchableOpacity onPress={() => openEditModal(note)}>
-                    <Text style={styles.editText}>Edit</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => deleteNote(note.id)}>
-                    <Text style={styles.deleteText}>Delete</Text>
-                  </TouchableOpacity>
+                <View style={styles.noteFooter}>
+                  <Text style={styles.noteDate}>
+                    {new Date(note.created_at).toLocaleDateString()} at{' '}
+                    {new Date(note.created_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                  <View style={styles.noteActions}>
+                    <TouchableOpacity onPress={(e) => {
+                      e.stopPropagation();
+                      openEditModal(note);
+                    }}>
+                      <Text style={styles.editText}>Edit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={(e) => {
+                      e.stopPropagation();
+                      deleteNote(note.id);
+                    }}>
+                      <Text style={styles.deleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
+              </TouchableOpacity>
             </Animatable.View>
           ))
         )}
       </ScrollView>
 
-      {/* Add/Edit Note Modal */}
-      <Modal visible={showAddModal} animationType="slide" transparent>
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{editingNote ? 'Edit Note' : 'Add a Note'}</Text>
-
-            <TextInput
-              style={styles.textArea}
-              placeholder="Write something sweet..."
-              placeholderTextColor="#FFB6D9"
-              value={newNoteContent}
-              onChangeText={setNewNoteContent}
-              multiline
-              numberOfLines={6}
-              textAlignVertical="top"
-            />
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.button, styles.cancelButton]}
-                onPress={() => {
-                  setShowAddModal(false);
-                  setNewNoteContent('');
-                  setEditingNote(null);
-                }}
-              >
-                <Text style={styles.buttonText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.button, styles.saveButton]}
-                onPress={addNote}
-              >
-                <Text style={styles.buttonText}>
-                  {editingNote ? 'Update' : 'Save (+3 ❤️)'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+      {/* View Note Modal - Full Screen */}
+      <Modal visible={viewingNote !== null} animationType="slide" transparent={false}>
+        <LinearGradient colors={theme.gradient} style={styles.fullScreenModal}>
+          <View style={[styles.fullScreenHeader, { paddingTop: insets.top + 20 }]}>
+            <TouchableOpacity onPress={() => setViewingNote(null)} style={styles.closeButton}>
+              <Text style={styles.closeButtonText}>✕ Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.fullScreenDate}>
+              {viewingNote && new Date(viewingNote.created_at).toLocaleDateString()} at{' '}
+              {viewingNote && new Date(viewingNote.created_at).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
           </View>
-        </View>
+          <ScrollView style={styles.fullScreenScroll} contentContainerStyle={styles.fullScreenContent}>
+            <Text style={styles.fullScreenText}>{viewingNote?.content}</Text>
+          </ScrollView>
+          <View style={[styles.fullScreenActions, { paddingBottom: insets.bottom + 20 }]}>
+            <TouchableOpacity
+              style={[styles.fullScreenButton, { backgroundColor: theme.primary }]}
+              onPress={() => {
+                openEditModal(viewingNote);
+                setViewingNote(null);
+              }}
+            >
+              <Text style={styles.fullScreenButtonText}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.fullScreenButton, { backgroundColor: theme.error }]}
+              onPress={() => {
+                setViewingNote(null);
+                deleteNote(viewingNote.id);
+              }}
+            >
+              <Text style={styles.fullScreenButtonText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </LinearGradient>
+      </Modal>
+
+      {/* Add/Edit Note Modal - Larger */}
+      <Modal visible={showAddModal} animationType="slide" transparent={false}>
+        <LinearGradient colors={theme.gradient} style={styles.fullScreenModal}>
+          <View style={[styles.fullScreenHeader, { paddingTop: insets.top + 20 }]}>
+            <TouchableOpacity
+              onPress={() => {
+                setShowAddModal(false);
+                setNewNoteContent('');
+                setEditingNote(null);
+              }}
+              style={styles.closeButton}
+            >
+              <Text style={styles.closeButtonText}>✕ Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>{editingNote ? 'Edit Note' : 'Add a Note'}</Text>
+          </View>
+
+          <TextInput
+            style={styles.largeTextArea}
+            placeholder="Write something sweet... (no character limit)"
+            placeholderTextColor={theme.textSecondary}
+            value={newNoteContent}
+            onChangeText={setNewNoteContent}
+            multiline
+            textAlignVertical="top"
+            autoFocus
+          />
+
+          <View style={[styles.fullScreenActions, { paddingBottom: insets.bottom + 20 }]}>
+            <TouchableOpacity
+              style={[styles.fullScreenButton, { backgroundColor: theme.primary }]}
+              onPress={addNote}
+            >
+              <Text style={styles.fullScreenButtonText}>
+                {editingNote ? 'Update Note' : 'Save Note (+3 ❤️)'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </LinearGradient>
       </Modal>
 
       {/* Custom Alert Modal */}
@@ -410,7 +479,7 @@ export default function NotesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -421,7 +490,7 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 18,
-    color: '#FF1493',
+    color: theme.primary,
   },
   header: {
     flexDirection: 'row',
@@ -431,7 +500,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   addButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 15,
@@ -459,21 +528,21 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   emptySubtext: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   noteCard: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     padding: 20,
     marginBottom: 15,
     borderWidth: 2,
-    borderColor: '#FFE5EC',
-    shadowColor: '#FF1493',
+    borderColor: theme.backgroundSecondary,
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
@@ -481,7 +550,7 @@ const styles = StyleSheet.create({
   },
   noteContent: {
     fontSize: 16,
-    color: '#333',
+    color: theme.text,
     marginBottom: 10,
     lineHeight: 24,
   },
@@ -492,7 +561,7 @@ const styles = StyleSheet.create({
   },
   noteDate: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   noteActions: {
     flexDirection: 'row',
@@ -500,12 +569,12 @@ const styles = StyleSheet.create({
   },
   editText: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
     fontWeight: 'bold',
   },
   deleteText: {
     fontSize: 12,
-    color: '#FF1493',
+    color: theme.text,
     fontWeight: 'bold',
   },
   modalContainer: {
@@ -515,7 +584,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   modalContent: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 30,
     width: '90%',
@@ -524,17 +593,17 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 20,
     textAlign: 'center',
   },
   textArea: {
-    backgroundColor: '#FFF0F5',
+    backgroundColor: theme.background,
     borderRadius: 15,
     padding: 15,
     fontSize: 16,
     borderWidth: 2,
-    borderColor: '#FFB6D9',
+    borderColor: theme.border,
     minHeight: 150,
     marginBottom: 20,
   },
@@ -550,10 +619,10 @@ const styles = StyleSheet.create({
     marginHorizontal: 5,
   },
   cancelButton: {
-    backgroundColor: '#FFB6D9',
+    backgroundColor: theme.border,
   },
   saveButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
   },
   buttonText: {
     color: 'white',
@@ -567,35 +636,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   customAlertContainer: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 20,
     padding: 25,
     width: '80%',
     maxWidth: 400,
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FF1493',
+    borderColor: theme.primary,
   },
   customAlertTitle: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 12,
     textAlign: 'center',
   },
   customAlertMessage: {
     fontSize: 16,
-    color: '#666',
+    color: theme.textSecondary,
     marginBottom: 20,
     textAlign: 'center',
     lineHeight: 22,
   },
   customAlertButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     paddingHorizontal: 40,
     borderRadius: 25,
-    shadowColor: '#FF1493',
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
@@ -605,5 +674,65 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  fullScreenModal: {
+    flex: 1,
+  },
+  fullScreenHeader: {
+    padding: 20,
+    paddingTop: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border,
+  },
+  closeButton: {
+    marginBottom: 10,
+  },
+  closeButtonText: {
+    fontSize: 16,
+    color: theme.primary,
+    fontWeight: 'bold',
+  },
+  fullScreenDate: {
+    fontSize: 14,
+    color: theme.textSecondary,
+    textAlign: 'center',
+  },
+  fullScreenScroll: {
+    flex: 1,
+  },
+  fullScreenContent: {
+    padding: 20,
+  },
+  fullScreenText: {
+    fontSize: 18,
+    color: theme.text,
+    lineHeight: 28,
+  },
+  fullScreenActions: {
+    flexDirection: 'row',
+    padding: 20,
+    paddingBottom: 20,
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: theme.border,
+  },
+  fullScreenButton: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 15,
+    alignItems: 'center',
+  },
+  fullScreenButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  largeTextArea: {
+    flex: 1,
+    backgroundColor: theme.card,
+    padding: 20,
+    fontSize: 18,
+    color: theme.text,
+    lineHeight: 26,
   },
 });

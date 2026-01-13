@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../lib/authContext';
+import { useTheme } from '../../lib/themeContext';
 import { getCoupleData } from '../../lib/storage';
 import { getPendingTurnCount } from '../../lib/gameHelper';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
@@ -11,7 +13,9 @@ import { startWidgetBackgroundSync } from '../../lib/widgetBackgroundSync';
 
 export default function TabsLayout() {
   const { user } = useAuth();
+  const { theme } = useTheme();
   const [pendingTurnCount, setPendingTurnCount] = useState(0);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (!user) return;
@@ -64,20 +68,20 @@ export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#FF1493',
-        tabBarInactiveTintColor: '#FFB6D9',
+        tabBarActiveTintColor: theme.primary,
+        tabBarInactiveTintColor: theme.primaryLight,
         tabBarStyle: {
-          backgroundColor: '#FFF0F5',
+          backgroundColor: theme.background,
           borderTopWidth: 2,
-          borderTopColor: '#FFE5EC',
-          height: 60,
-          paddingBottom: 8,
+          borderTopColor: theme.border,
+          height: 60 + insets.bottom,
+          paddingBottom: insets.bottom + 8,
           paddingTop: 8,
         },
         headerStyle: {
-          backgroundColor: '#FFE5EC',
+          backgroundColor: theme.backgroundSecondary,
         },
-        headerTintColor: '#FF1493',
+        headerTintColor: theme.primary,
         headerTitleStyle: {
           fontWeight: 'bold',
         },
@@ -90,7 +94,7 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="heart" size={size} color={color} />
           ),
-          headerTitle: '💕 Streak Pets 💕',
+          headerTitle: 'Spark ⚡',
           headerTitleAlign: 'center',
         }}
       />

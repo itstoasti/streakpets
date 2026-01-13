@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,11 +9,14 @@ import {
   Image,
   Modal,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Animatable from 'react-native-animatable';
 import { getCurrency, saveCurrency, getOwnedPets, saveOwnedPets, getPetData, savePetData, getStreakData, saveStreakData, getCurrentPetType, saveCurrentPetType, getSpecificPetData, saveSpecificPetData, getCoupleData } from '../../lib/storage';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useIsFocused } from '@react-navigation/native';
+import { useTheme } from '../../lib/themeContext';
+import { useRewardedAd } from '../../lib/rewardedAds';
 
 // Available pets in the shop with prices
 const SHOP_PETS = {
@@ -74,14 +77,33 @@ const SHOP_PETS = {
 };
 
 export default function MarketplaceScreen() {
+  const { theme } = useTheme();
+  const styles = useMemo(() => getStyles(theme), [theme]);
   const [currency, setCurrency] = useState(0);
   const [ownedPets, setOwnedPets] = useState([]);
   const [currentPet, setCurrentPet] = useState(null);
   const [streakRepairs, setStreakRepairs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
+  const [showCoinInfoModal, setShowCoinInfoModal] = useState(false);
   const [couple, setCouple] = useState(null);
   const isFocused = useIsFocused();
+
+  // Rewarded ad hook - earn coins for watching ads
+  const handleAdReward = async (rewardAmount, silent) => {
+    // Award coins
+    const coinsEarned = 10;
+    // Always read current value from storage to avoid race conditions
+    const currentCurrency = await getCurrency();
+    const newCurrency = currentCurrency + coinsEarned;
+    await saveCurrency(newCurrency);
+    setCurrency(newCurrency);
+    // Only show alert if not silent (silent is true for non-active tabs to prevent duplicate popups)
+    if (!silent) {
+      showAlert('Coins Earned! 💰', `You earned ${coinsEarned} coins for watching the ad!`);
+    }
+  };
+  const { loaded: adLoaded, loading: adLoading, showAd } = useRewardedAd(handleAdReward);
 
   useEffect(() => {
     if (isFocused) {
@@ -119,13 +141,15 @@ export default function MarketplaceScreen() {
       return;
     }
 
-    if (currency < pet.price) {
-      Alert.alert('Not Enough Coins', `You need ${pet.price} coins but only have ${currency}`);
+    // Always read current value from storage to avoid race conditions
+    const currentCurrency = await getCurrency();
+    if (currentCurrency < pet.price) {
+      Alert.alert('Not Enough Coins', `You need ${pet.price} coins but only have ${currentCurrency}`);
       return;
     }
 
     // Deduct currency
-    const newCurrency = currency - pet.price;
+    const newCurrency = currentCurrency - pet.price;
     await saveCurrency(newCurrency);
     setCurrency(newCurrency);
 
@@ -234,13 +258,15 @@ export default function MarketplaceScreen() {
   async function purchaseStreakRepair() {
     const price = 100;
 
-    if (currency < price) {
-      Alert.alert('Not Enough Coins', `You need ${price} coins but only have ${currency}`);
+    // Always read current value from storage to avoid race conditions
+    const currentCurrency = await getCurrency();
+    if (currentCurrency < price) {
+      Alert.alert('Not Enough Coins', `You need ${price} coins but only have ${currentCurrency}`);
       return;
     }
 
     // Deduct currency
-    const newCurrency = currency - price;
+    const newCurrency = currentCurrency - price;
     await saveCurrency(newCurrency);
     setCurrency(newCurrency);
 
@@ -262,14 +288,52 @@ export default function MarketplaceScreen() {
   }
 
   return (
-    <LinearGradient colors={['#FFE5EC', '#FFF0F5']} style={styles.container}>
+    <LinearGradient colors={theme.gradient} style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.currencyText}>💰 Coins: {currency}</Text>
+        <View style={styles.currencyContainer}>
+          <Text style={styles.currencyText}>💰 Coins: {currency}</Text>
+          <TouchableOpacity
+            style={styles.infoButton}
+            onPress={() => setShowCoinInfoModal(true)}
+          >
+            <Ionicons name="information-circle-outline" size={20} color={theme.primary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.title}>Pet Marketplace</Text>
         <Text style={styles.subtitle}>Purchase new pets to care for!</Text>
+
+        {/* Watch Ad for Coins Section */}
+        <View style={[styles.specialItemCard, { backgroundColor: theme.primaryLight, borderColor: theme.primary, borderWidth: 2 }]}>
+          <Text style={styles.specialItemEmoji}>📺</Text>
+          <View style={styles.specialItemInfo}>
+            <Text style={styles.specialItemName}>Watch Ad for Coins</Text>
+            <Text style={styles.specialItemDescription}>
+              {adLoading ? 'Loading ad...' : adLoaded ? 'Watch an ad and earn 15 coins!' : 'Ad not ready yet...'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[
+              styles.buyButton,
+              { backgroundColor: theme.primary },
+              !adLoaded && styles.buyButtonDisabled
+            ]}
+            onPress={async () => {
+              const success = await showAd();
+              if (!success) {
+                showAlert('Ad Not Ready', 'Please wait a moment and try again.');
+              }
+            }}
+            disabled={!adLoaded}
+          >
+            <Ionicons name="play-circle" size={20} color="#FFFFFF" />
+            <Text style={[styles.buyButtonText, { marginLeft: 5 }]}>
+              {adLoading ? 'Loading...' : 'Watch'}
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         {/* Streak Repair Section */}
         <View style={styles.specialItemCard}>
@@ -347,12 +411,7 @@ export default function MarketplaceScreen() {
           })}
         </View>
 
-        <View style={styles.tipBox}>
-          <Text style={styles.tipTitle}>💡 How to Earn Coins</Text>
-          <Text style={styles.tipText}>• Feed your pet: +5 coins</Text>
-          <Text style={styles.tipText}>• Play games (coming soon)</Text>
-          <Text style={styles.tipText}>• Add photos (coming soon)</Text>
-        </View>
+
       </ScrollView>
 
       {/* Custom Alert Modal */}
@@ -374,11 +433,64 @@ export default function MarketplaceScreen() {
           </Animatable.View>
         </View>
       </Modal>
+
+      {/* Coin Info Modal */}
+      <Modal visible={showCoinInfoModal} animationType="slide" transparent>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>How to Earn Coins 💰</Text>
+              <TouchableOpacity onPress={() => setShowCoinInfoModal(false)}>
+                <Ionicons name="close" size={24} color={theme.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.infoRow}>
+              <Text style={styles.infoIcon}>🍎</Text>
+              <View style={styles.infoTextContainer}>
+                <Text style={styles.infoLabel}>Feed your pet</Text>
+                <Text style={styles.infoValue}>+5 coins</Text>
+              </View>
+            </View>
+
+            <View style={styles.infoRow}>
+              <Text style={styles.infoIcon}>🏆</Text>
+              <View style={styles.infoTextContainer}>
+                <Text style={styles.infoLabel}>Win mini-games</Text>
+                <Text style={styles.infoValue}>+5 coins</Text>
+              </View>
+            </View>
+
+            <View style={styles.infoRow}>
+              <Text style={styles.infoIcon}>💬</Text>
+              <View style={styles.infoTextContainer}>
+                <Text style={styles.infoLabel}>Play conversation games</Text>
+                <Text style={styles.infoValue}>+5 coins</Text>
+              </View>
+            </View>
+
+            <View style={styles.infoRow}>
+              <Text style={styles.infoIcon}>🔥</Text>
+              <View style={styles.infoTextContainer}>
+                <Text style={styles.infoLabel}>Maintain streak</Text>
+                <Text style={styles.infoValue}>Daily rewards!</Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.closeModalButton}
+              onPress={() => setShowCoinInfoModal(false)}
+            >
+              <Text style={styles.closeModalButtonText}>Got it!</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -389,20 +501,28 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 18,
-    color: '#FF1493',
+    color: theme.primary,
     fontWeight: 'bold',
   },
   header: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     padding: 15,
     borderBottomWidth: 2,
-    borderBottomColor: '#FFE5EC',
+    borderBottomColor: theme.backgroundSecondary,
     alignItems: 'center',
+  },
+  currencyContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   currencyText: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
+  },
+  infoButton: {
+    padding: 2,
   },
   scrollContent: {
     padding: 20,
@@ -410,18 +530,18 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     textAlign: 'center',
     marginBottom: 5,
   },
   subtitle: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginBottom: 20,
   },
   specialItemCard: {
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     padding: 15,
     marginBottom: 20,
@@ -440,17 +560,17 @@ const styles = StyleSheet.create({
   specialItemName: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 3,
   },
   specialItemDescription: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
   },
   sectionTitle: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 15,
   },
   petsGrid: {
@@ -460,13 +580,13 @@ const styles = StyleSheet.create({
   },
   petCard: {
     width: '48%',
-    backgroundColor: 'white',
+    backgroundColor: theme.card,
     borderRadius: 15,
     padding: 15,
     marginBottom: 15,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#FFE5EC',
+    borderColor: theme.backgroundSecondary,
   },
   petImage: {
     width: 195,
@@ -480,24 +600,24 @@ const styles = StyleSheet.create({
   petName: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 5,
   },
   petDescription: {
     fontSize: 12,
-    color: '#FF69B4',
+    color: theme.secondary,
     textAlign: 'center',
     marginBottom: 10,
   },
   buyButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 10,
     marginTop: 5,
   },
   buyButtonDisabled: {
-    backgroundColor: '#FFB6D9',
+    backgroundColor: theme.border,
   },
   buyButtonText: {
     color: 'white',
@@ -505,7 +625,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   equipButton: {
-    backgroundColor: '#FF69B4',
+    backgroundColor: theme.secondary,
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 10,
@@ -528,24 +648,80 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 12,
   },
-  tipBox: {
-    backgroundColor: 'white',
-    padding: 15,
-    borderRadius: 15,
-    marginTop: 10,
-    borderWidth: 2,
-    borderColor: '#FFE5EC',
+  equippedText: {
+    color: '#228B22',
+    fontWeight: 'bold',
+    fontSize: 12,
   },
-  tipTitle: {
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  modalContent: {
+    width: '90%',
+    backgroundColor: theme.card,
+    borderRadius: 20,
+    padding: 20,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  modalHeader: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: theme.primary,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 15,
+    backgroundColor: theme.background,
+    padding: 12,
+    borderRadius: 12,
+  },
+  infoIcon: {
+    fontSize: 30,
+    marginRight: 15,
+  },
+  infoTextContainer: {
+    flex: 1,
+  },
+  infoLabel: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#FF1493',
-    marginBottom: 10,
+    color: theme.primary,
   },
-  tipText: {
+  infoValue: {
     fontSize: 14,
-    color: '#FF69B4',
-    marginBottom: 5,
+    color: theme.success,
+    fontWeight: '600',
+  },
+  closeModalButton: {
+    backgroundColor: theme.primary,
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 25,
+    marginTop: 10,
+    width: '100%',
+    alignItems: 'center',
+  },
+  closeModalButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
   alertOverlay: {
     flex: 1,
@@ -561,8 +737,8 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FF1493',
-    shadowColor: '#FF1493',
+    borderColor: theme.primary,
+    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 10,
@@ -571,19 +747,19 @@ const styles = StyleSheet.create({
   alertTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#FF1493',
+    color: theme.primary,
     marginBottom: 15,
     textAlign: 'center',
   },
   alertMessage: {
     fontSize: 16,
-    color: '#FF69B4',
+    color: theme.secondary,
     marginBottom: 25,
     textAlign: 'center',
     lineHeight: 24,
   },
   alertButton: {
-    backgroundColor: '#FF1493',
+    backgroundColor: theme.primary,
     paddingVertical: 12,
     paddingHorizontal: 40,
     borderRadius: 15,
