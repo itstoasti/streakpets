@@ -4,24 +4,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spark - Ignite Your Connection</title>
-    <meta name="description"
-        content="The ultimate app for building stronger relationships through shared play, daily questions, and memories.">
+    <title>Spark - Your Digital Companion</title>
+    <meta name="description" content="Adopt a digital companion, play games, and build your relationship streak.">
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         :root {
-            /* Spark Dark Theme */
-            --bg-dark: #121212;
-            --bg-secondary: #1E1E1E;
-            --primary: #FFD700;
+            /* Golden Hour Theme */
+            --bg-warm: #FFFBF0;
+            /* Soft Cream */
+            --bg-gradient: linear-gradient(135deg, #FFF6E5 0%, #FFECD2 100%);
+            --primary: #FF8C00;
+            /* Dark Orange */
+            --primary-light: #FFA500;
+            --secondary: #FFD700;
             /* Gold */
-            --primary-glow: rgba(255, 215, 0, 0.3);
-            --accent: #00BFFF;
-            /* Electric Blue */
-            --accent-glow: rgba(0, 191, 255, 0.3);
-            --text-main: #FFFFFF;
-            --text-secondary: #B0B0B0;
-            --glass-bg: rgba(30, 30, 30, 0.6);
-            --glass-border: rgba(255, 255, 255, 0.1);
+            --accent: #FF6347;
+            /* Tomato Red */
+            --text-main: #4A4036;
+            /* Warm Dark Brown */
+            --text-light: #8C8174;
+            --glass-white: rgba(255, 255, 255, 0.8);
+            --glass-border: rgba(255, 255, 255, 0.4);
+            --shadow-soft: 0 10px 30px rgba(255, 140, 0, 0.15);
+            --shadow-glow: 0 0 20px rgba(255, 215, 0, 0.4);
         }
 
         * {
@@ -31,14 +36,22 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            font-family: 'Quicksand', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-warm);
             color: var(--text-main);
             line-height: 1.6;
             overflow-x: hidden;
-            min-height: 100vh;
         }
 
+        /* Typography */
+        h1,
+        h2,
+        h3 {
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        /* Navbar */
         .navbar {
             padding: 1.5rem 2rem;
             display: flex;
@@ -46,131 +59,216 @@
             align-items: center;
             max-width: 1200px;
             margin: 0 auto;
+            position: relative;
+            z-index: 10;
         }
 
         .logo {
             font-size: 1.8rem;
-            font-weight: 800;
+            font-weight: 900;
             color: var(--primary);
             text-decoration: none;
-            letter-spacing: -0.5px;
-            text-shadow: 0 0 10px var(--primary-glow);
             display: flex;
             align-items: center;
             gap: 10px;
         }
 
         .logo img {
-            height: 40px;
+            height: 45px;
             width: auto;
+            filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.1));
         }
 
+        /* Hero Section */
         .hero {
+            position: relative;
+            padding: 6rem 1.5rem 4rem;
             text-align: center;
-            padding: 4rem 1.5rem;
-            max-width: 900px;
+            background: var(--bg-gradient);
+            border-bottom-left-radius: 50px;
+            border-bottom-right-radius: 50px;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255, 215, 0, 0.2) 0%, transparent 70%);
+            animation: pulse 4s infinite;
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 800px;
             margin: 0 auto;
-            animation: fadeIn 1s ease-out;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
         }
 
         .hero-image {
-            width: 180px;
-            height: 180px;
+            width: 280px;
+            height: auto;
             margin-bottom: 2rem;
-            filter: drop-shadow(0 0 20px var(--accent-glow));
+            filter: drop-shadow(0 10px 20px rgba(255, 140, 0, 0.3));
             animation: float 6s ease-in-out infinite;
         }
 
         .hero h1 {
             font-size: 3.5rem;
-            line-height: 1.2;
+            line-height: 1.1;
             margin-bottom: 1.5rem;
-            background: linear-gradient(to right, #FFF, #B0B0B0);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: var(--text-main);
         }
 
         .hero h1 span {
             color: var(--primary);
-            background: none;
-            -webkit-text-fill-color: var(--primary);
-            text-shadow: 0 0 20px var(--primary-glow);
+            position: relative;
+            display: inline-block;
+        }
+
+        .hero h1 span::after {
+            content: '';
+            position: absolute;
+            bottom: 5px;
+            left: 0;
+            width: 100%;
+            height: 8px;
+            background: var(--secondary);
+            z-index: -1;
+            opacity: 0.6;
+            border-radius: 4px;
         }
 
         .hero p {
             font-size: 1.25rem;
-            color: var(--text-secondary);
+            color: var(--text-light);
             margin-bottom: 2.5rem;
             max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
         }
 
-        .download-btn {
+        /* Buttons */
+        .cta-btn {
             display: inline-block;
-            background: linear-gradient(45deg, var(--primary), #FFA500);
-            color: #000;
+            background: linear-gradient(45deg, var(--primary), var(--accent));
+            color: white;
             padding: 1rem 3rem;
             border-radius: 50px;
             text-decoration: none;
             font-weight: 700;
-            font-size: 1.1rem;
-            transition: transform 0.2s, box-shadow 0.2s;
-            box-shadow: 0 0 20px var(--primary-glow);
-            border: none;
+            font-size: 1.2rem;
+            box-shadow: 0 5px 20px rgba(255, 99, 71, 0.4);
+            transition: all 0.3s ease;
         }
 
-        .download-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0 30px var(--primary-glow);
+        .cta-btn:hover {
+            transform: translateY(-3px) scale(1.05);
+            box-shadow: 0 10px 25px rgba(255, 99, 71, 0.6);
         }
 
-        .features {
+        /* Companions Section */
+        .companions {
+            padding: 5rem 1.5rem;
             max-width: 1200px;
-            margin: 4rem auto;
-            padding: 0 1.5rem;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 2rem;
+            margin: 0 auto;
+            text-align: center;
         }
 
-        .feature-card {
-            background: var(--glass-bg);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            padding: 2.5rem;
-            border-radius: 24px;
-            border: 1px solid var(--glass-border);
-            transition: transform 0.3s, border-color 0.3s;
-        }
-
-        .feature-card:hover {
-            transform: translateY(-5px);
-            border-color: var(--accent);
-            box-shadow: 0 0 20px rgba(0, 191, 255, 0.1);
-        }
-
-        .feature-icon {
+        .section-title {
             font-size: 2.5rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .feature-card h3 {
-            font-size: 1.5rem;
-            margin-bottom: 1rem;
+            margin-bottom: 3rem;
             color: var(--text-main);
         }
 
-        .feature-card p {
-            color: var(--text-secondary);
+        .companion-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+            padding: 1rem;
         }
 
+        .pet-card {
+            background: var(--glass-white);
+            border: 1px solid var(--glass-border);
+            border-radius: 30px;
+            padding: 2rem;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .pet-card:hover {
+            transform: translateY(-10px);
+            box-shadow: var(--shadow-soft);
+            background: white;
+        }
+
+        .pet-img {
+            width: 120px;
+            height: 120px;
+            object-fit: contain;
+            margin-bottom: 1.5rem;
+            transition: transform 0.3s;
+        }
+
+        .pet-card:hover .pet-img {
+            transform: scale(1.1) rotate(5deg);
+        }
+
+        .pet-name {
+            font-size: 1.4rem;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .pet-trait {
+            font-size: 0.9rem;
+            color: var(--text-light);
+            background: #FFF5E6;
+            padding: 5px 15px;
+            border-radius: 20px;
+            display: inline-block;
+        }
+
+        /* Features */
+        .features {
+            background: white;
+            padding: 5rem 1.5rem;
+            border-radius: 50px 50px 0 0;
+        }
+
+        .features-grid {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 3rem;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 1.5rem;
+        }
+
+        .icon-box {
+            background: #FFF0F5;
+            padding: 1rem;
+            border-radius: 20px;
+            color: var(--primary);
+            font-size: 1.5rem;
+        }
+
+        /* Footer */
         .footer {
-            text-align: center;
+            background: #332a22;
+            color: #dcdcdc;
             padding: 4rem 1.5rem;
-            margin-top: 4rem;
-            border-top: 1px solid var(--glass-border);
+            text-align: center;
         }
 
         .footer-links {
@@ -181,9 +279,8 @@
         }
 
         .footer a {
-            color: var(--text-secondary);
+            color: #dcdcdc;
             text-decoration: none;
-            font-weight: 500;
             transition: color 0.2s;
         }
 
@@ -191,34 +288,33 @@
             color: var(--primary);
         }
 
-        .copyright {
-            color: #666;
-            font-size: 0.9rem;
-        }
-
+        /* Animations */
         @keyframes float {
-            0% {
-                transform: translateY(0px);
+
+            0%,
+            100% {
+                transform: translateY(0);
             }
 
             50% {
                 transform: translateY(-15px);
             }
-
-            100% {
-                transform: translateY(0px);
-            }
         }
 
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                opacity: 0.5;
             }
 
-            to {
-                opacity: 1;
-                transform: translateY(0);
+            50% {
+                transform: scale(1.05);
+                opacity: 0.3;
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 0.5;
             }
         }
 
@@ -227,7 +323,7 @@
                 font-size: 2.5rem;
             }
 
-            .features {
+            .features-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -240,31 +336,75 @@
             <img src="assets/spark-logo.png" alt="Spark Logo">
             Spark
         </a>
+        <a href="#" class="cta-btn" style="padding: 0.5rem 1.5rem; font-size: 1rem;">Get App</a>
     </nav>
 
-    <section class="hero">
-        <img src="assets/spark-logo.png" alt="Spark Character" class="hero-image">
-        <h1>Ignite Your <br><span>Relationship</span></h1>
-        <p>A fun way to stay connected, build healthy habits, and grow closer. Play games, answer daily questions, and
-            nurture your bond.</p>
-        <a href="#" class="download-btn">Download App</a>
+    <header class="hero">
+        <div class="hero-content">
+            <img src="assets/spark-hero.png" alt="Spark Character" class="hero-image">
+            <h1>Ignite Your <br><span>Connection</span></h1>
+            <p>Adopt a digital companion with your partner. Build your streak, play games, and grow closer every day.
+            </p>
+            <a href="#" class="cta-btn">Start Your Streak</a>
+        </div>
+    </header>
+
+    <section class="companions">
+        <h2 class="section-title">choose Your Companion</h2>
+        <div class="companion-grid">
+            <div class="pet-card">
+                <img src="assets/pet-fox.png" alt="Fox" class="pet-img">
+                <h3 class="pet-name">Fox</h3>
+                <span class="pet-trait">Clever & playful</span>
+            </div>
+            <div class="pet-card">
+                <img src="assets/pet-turtle.png" alt="Turtle" class="pet-img">
+                <h3 class="pet-name">Turtle</h3>
+                <span class="pet-trait">Chill & Steady</span>
+            </div>
+            <div class="pet-card">
+                <img src="assets/pet-panda.png" alt="Panda" class="pet-img">
+                <h3 class="pet-name">Panda</h3>
+                <span class="pet-trait">Gentle & Sweet</span>
+            </div>
+            <div class="pet-card">
+                <img src="assets/pet-bear.png" alt="Bear" class="pet-img">
+                <h3 class="pet-name">Bear</h3>
+                <span class="pet-trait">Loyal & Strong</span>
+            </div>
+        </div>
     </section>
 
     <section class="features">
-        <div class="feature-card">
-            <div class="feature-icon">⚡</div>
-            <h3>Keep the Spark Alive</h3>
-            <p>Maintain your daily streak to unlock rewards and watch your shared connection level up.</p>
-        </div>
-        <div class="feature-card">
-            <div class="feature-icon">💭</div>
-            <h3>Deepen Connection</h3>
-            <p>Discover new things about each other with "Would You Rather" and daily relationship questions.</p>
-        </div>
-        <div class="feature-card">
-            <div class="feature-icon">🏆</div>
-            <h3>Play Together</h3>
-            <p>Compete in fun mini-games or collaborate to build your shared space and memories.</p>
+        <div class="features-grid">
+            <div class="feature-item">
+                <div class="icon-box"><i data-lucide="zap"></i></div>
+                <div>
+                    <h3>Daily Streak</h3>
+                    <p>Check in daily to keep your streak alive. Unlock rewards and watch your companion grow!</p>
+                </div>
+            </div>
+            <div class="feature-item">
+                <div class="icon-box"><i data-lucide="message-circle-heart"></i></div>
+                <div>
+                    <h3>Spark Cards</h3>
+                    <p>Thousands of "Would You Rather" and Trivia questions to spark deep conversations.</p>
+                </div>
+            </div>
+            <div class="feature-item">
+                <div class="icon-box"><i data-lucide="images"></i></div>
+                <div>
+                    <h3>Shared Memories</h3>
+                    <p>A private photo widget that updates on both your homescreens properly.</p>
+                </div>
+            </div>
+            <div class="feature-item">
+                <div class="icon-box"><i data-lucide="gamepad-2"></i></div>
+                <div>
+                    <h3>Mini Games</h3>
+                    <p>Play fun mini-games together to earn coins and customize your pet's style.</p>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -273,8 +413,13 @@
             <a href="privacy-policy.html">Privacy Policy</a>
             <a href="delete-account.html">Delete Account</a>
         </div>
-        <p class="copyright">© 2026 Spark. All rights reserved.</p>
+        <p>© 2026 Spark. All rights reserved.</p>
     </footer>
+
+    <script>
+        // Initialize Icons
+        lucide.createIcons();
+    </script>
 </body>
 
 </html>
