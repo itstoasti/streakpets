@@ -1,76 +1,116 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Privacy Policy - Spark</title>
     <style>
+        :root {
+            /* Spark Dark Theme */
+            --bg-dark: #121212;
+            --bg-secondary: #1E1E1E;
+            --primary: #FFD700;
+            /* Gold */
+            --primary-glow: rgba(255, 215, 0, 0.3);
+            --accent: #00BFFF;
+            /* Electric Blue */
+            --accent-glow: rgba(0, 191, 255, 0.3);
+            --text-main: #FFFFFF;
+            --text-secondary: #B0B0B0;
+            --glass-bg: rgba(30, 30, 30, 0.6);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            color: var(--text-main);
             line-height: 1.6;
-            color: #333;
-            background: linear-gradient(135deg, #fff0f5 0%, #ffe4ec 100%);
             min-height: 100vh;
             padding: 20px;
         }
+
         .container {
             max-width: 800px;
             margin: 0 auto;
-            background: white;
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
             border-radius: 20px;
             padding: 40px;
-            box-shadow: 0 10px 40px rgba(255, 20, 147, 0.1);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
         }
+
         h1 {
-            color: #FF1493;
+            color: var(--primary);
             margin-bottom: 10px;
             font-size: 2.5em;
+            text-shadow: 0 0 10px var(--primary-glow);
         }
+
         .app-name {
-            color: #FF1493;
+            color: var(--primary);
             font-weight: bold;
         }
+
         .last-updated {
-            color: #888;
+            color: var(--text-secondary);
             margin-bottom: 30px;
             font-size: 0.9em;
         }
+
         h2 {
-            color: #FF1493;
+            color: var(--accent);
             margin-top: 30px;
             margin-bottom: 15px;
             font-size: 1.4em;
         }
-        p, li {
+
+        p,
+        li {
             margin-bottom: 12px;
-            color: #555;
+            color: var(--text-main);
         }
+
         ul {
             margin-left: 20px;
             margin-bottom: 20px;
         }
+
         a {
-            color: #FF1493;
+            color: var(--primary);
+            text-decoration: none;
         }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
         .contact-section {
-            background: #fff0f5;
+            background: rgba(255, 255, 255, 0.05);
             padding: 20px;
             border-radius: 10px;
             margin-top: 30px;
+            border: 1px solid var(--glass-border);
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <h1>Privacy Policy</h1>
         <p class="last-updated">Last updated: January 13, 2026</p>
 
-        <p>Welcome to <span class="app-name">Spark</span> ("we," "our," or "us"). This Privacy Policy explains how we collect, use, and protect your information when you use our mobile application.</p>
+        <p>Welcome to <span class="app-name">Spark</span> ("we," "our," or "us"). This Privacy Policy explains how we
+            collect, use, and protect your information when you use our mobile application.</p>
 
         <h2>1. Information We Collect</h2>
         <p>We collect the following types of information:</p>
@@ -93,7 +133,8 @@
         </ul>
 
         <h2>3. Data Storage and Security</h2>
-        <p>Your data is stored securely using Supabase, a trusted cloud database provider. We implement industry-standard security measures including:</p>
+        <p>Your data is stored securely using Supabase, a trusted cloud database provider. We implement
+            industry-standard security measures including:</p>
         <ul>
             <li>Encrypted data transmission (HTTPS/TLS)</li>
             <li>Secure authentication</li>
@@ -103,12 +144,15 @@
         <h2>4. Data Sharing</h2>
         <p>We do not sell your personal information. Your data is shared only with:</p>
         <ul>
-            <li><strong>Your Partner:</strong> Data you create together (photos, game scores, pet status) is shared between paired accounts</li>
-            <li><strong>Service Providers:</strong> We use trusted third-party services (Supabase for data storage, Google AdMob for advertising)</li>
+            <li><strong>Your Partner:</strong> Data you create together (photos, game scores, pet status) is shared
+                between paired accounts</li>
+            <li><strong>Service Providers:</strong> We use trusted third-party services (Supabase for data storage,
+                Google AdMob for advertising)</li>
         </ul>
 
         <h2>5. Advertising</h2>
-        <p>We use Google AdMob to display advertisements. AdMob may collect device identifiers and usage data to serve relevant ads. You can manage ad preferences through your device settings.</p>
+        <p>We use Google AdMob to display advertisements. AdMob may collect device identifiers and usage data to serve
+            relevant ads. You can manage ad preferences through your device settings.</p>
 
         <h2>6. Your Rights</h2>
         <p>You have the right to:</p>
@@ -128,10 +172,12 @@
         <p>To delete your account, visit: <a href="delete-account.html">Account Deletion Page</a></p>
 
         <h2>8. Children's Privacy</h2>
-        <p>Our app is not intended for children under 13. We do not knowingly collect information from children under 13.</p>
+        <p>Our app is not intended for children under 13. We do not knowingly collect information from children under
+            13.</p>
 
         <h2>9. Changes to This Policy</h2>
-        <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new policy on this page.</p>
+        <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new
+            policy on this page.</p>
 
         <div class="contact-section">
             <h2>10. Contact Us</h2>
@@ -140,4 +186,5 @@
         </div>
     </div>
 </body>
+
 </html>
