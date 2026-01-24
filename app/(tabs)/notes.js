@@ -166,6 +166,13 @@ export default function NotesScreen() {
           Alert.alert('Error', error.message);
           return;
         }
+
+        // Optimistically update local state (don't rely solely on realtime)
+        setNotes(prev => prev.map(note =>
+          note.id === editingNote.id
+            ? { ...note, content: newNoteContent.trim() }
+            : note
+        ));
       } else {
         // Local mode
         const updatedNotes = notes.map(note =>
